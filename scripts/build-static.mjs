@@ -16,4 +16,10 @@ copy('node_modules/jszip/dist/jszip.min.js', 'vendor/jszip.min.js');
 const apiBase = (process.env.COMPILE_SERVER_URL || '').replace(/\/+$/, '');
 fs.writeFileSync(path.join(dist, 'config.js'), `window.WEBIDE_CONFIG = ${JSON.stringify({ apiBase })};\n`);
 fs.writeFileSync(path.join(dist, '.nojekyll'), '');
+
+// Cache-bust so visitors get new versions right after a deploy
+const v = (process.env.GITHUB_SHA || String(Date.now())).slice(0, 8);
+const html = path.join(dist, 'index.html');
+fs.writeFileSync(html, fs.readFileSync(html, 'utf8')
+  .replace(/(href|src)="(style\.css|config\.js|js\/app\.js)"/g, (_m, attr, file) => `${attr}="${file}?v=${v}"`));
 console.log(`Built dist/ (compile server: ${apiBase || 'same origin'})`);

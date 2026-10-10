@@ -344,12 +344,70 @@ function downloadBlob(blob, name) {
 // ---------- Boards ----------
 let boardInfo = null; // { options, upload }
 let boardOpts = store.get('boardOpts', {});
+let builtinBoards = false;
+
+// Common boards that are always available, so the picker works even before the compile server answers
+const v1 = (speed, pageSize = 128) => ({ method: 'stk500v1', speed, pageSize });
+const esp = () => ({ method: 'esptool', speed: 921600 });
+const cpuOpt = values => [{
+  option: 'cpu', option_label: 'Processor',
+  values: values.map(([value, value_label], i) => ({ value, value_label, selected: i === 0 })),
+}];
+const AVR = 'Arduino AVR Boards', ESP = 'esp32';
+const BUILTIN_BOARDS = [
+  { name: 'Arduino Uno', fqbn: 'arduino:avr:uno', platform: AVR, upload: () => v1(115200) },
+  {
+    name: 'Arduino Nano', fqbn: 'arduino:avr:nano', platform: AVR,
+    options: cpuOpt([['atmega328', 'ATmega328P'], ['atmega328old', 'ATmega328P (Old Bootloader)'], ['atmega168', 'ATmega168']]),
+    upload: o => v1({ atmega328old: 57600, atmega168: 19200 }[o.cpu] || 115200),
+  },
+  {
+    name: 'Arduino Mega or Mega 2560', fqbn: 'arduino:avr:mega', platform: AVR,
+    options: cpuOpt([['atmega2560', 'ATmega2560 (Mega 2560)'], ['atmega1280', 'ATmega1280']]),
+    upload: o => (o.cpu === 'atmega1280' ? v1(57600, 256) : { method: 'stk500v2', speed: 115200, pageSize: 256 }),
+  },
+  {
+    name: 'Arduino Pro or Pro Mini', fqbn: 'arduino:avr:pro', platform: AVR,
+    options: cpuOpt([['16MHzatmega328', 'ATmega328P (5V, 16 MHz)'], ['8MHzatmega328', 'ATmega328P (3.3V, 8 MHz)']]),
+    upload: () => v1(57600),
+  },
+  { name: 'ESP32 Dev Module', fqbn: 'esp32:esp32:esp32', platform: ESP, upload: esp },
+  { name: 'ESP32S3 Dev Module', fqbn: 'esp32:esp32:esp32s3', platform: ESP, upload: esp },
+  { name: 'ESP32C3 Dev Module', fqbn: 'esp32:esp32:esp32c3', platform: ESP, upload: esp },
+  { name: 'ESP32S2 Dev Module', fqbn: 'esp32:esp32:esp32s2', platform: ESP, upload: esp },
+  { name: 'ESP32C6 Dev Module', fqbn: 'esp32:esp32:esp32c6', platform: ESP, upload: esp },
+];
+
+function selectedOpts(base, options) {
+  const o = {};
+  for (const opt of options) o[opt.option] = boardOpts[base]?.[opt.option] || opt.values.find(v => v.selected)?.value;
+  return o;
+}
+
+function builtinDetails() {
+  const base = $('boardSelect').value;
+  const b = BUILTIN_BOARDS.find(x => x.fqbn === base);
+  const options = b?.options || [];
+  return { options, upload: b ? b.upload(selectedOpts(base, options)) : { method: 'download' } };
+}
+
+async function fetchBoards() {
+  try {
+    const boards = await (await api('/api/boards')).json();
+    if (boards.error) throw new Error(boards.error);
+    builtinBoards = false;
+    return boards;
+  } catch (e) {
+    builtinBoards = true;
+    log('Compile server not connected: showing common boards only. Compiling needs the server; click the status bar at the bottom to set its URL.', 'warn');
+    return BUILTIN_BOARDS;
+  }
+}
 
 async function loadBoards() {
   const sel = $('boardSelect');
   try {
-    const boards = await (await api('/api/boards')).json();
-    if (boards.error) throw new Error(boards.error);
+    const boards = await fetchBoards();
     const groups = {};
     for (const b of boards) (groups[b.platform] ||= []).push(b);
     sel.innerHTML = '';
@@ -379,12 +437,16 @@ async function onBoardChange() {
   store.set('board', base);
   const box = $('boardOptions');
   box.innerHTML = '';
-  try {
-    boardInfo = await (await api('/api/board?fqbn=' + encodeURIComponent(fullFqbn()))).json();
-    if (boardInfo.error) throw new Error(boardInfo.error);
-  } catch (e) {
-    boardInfo = null;
-    return log('Board details failed: ' + e.message, 'err');
+  if (builtinBoards) {
+    boardInfo = builtinDetails();
+  } else {
+    try {
+      boardInfo = await (await api('/api/board?fqbn=' + encodeURIComponent(fullFqbn()))).json();
+      if (boardInfo.error) throw new Error(boardInfo.error);
+    } catch (e) {
+      boardInfo = builtinDetails();
+      log('Board details failed: ' + e.message, 'err');
+    }
   }
   // Show only the options that matter most to keep the toolbar compact
   const important = /^(cpu|PartitionScheme|FlashSize|UploadSpeed|CDCOnBoot|USBMode)$/;
@@ -404,6 +466,7 @@ async function onBoardChange() {
 }
 
 async function refreshUploadInfo() {
+  if (builtinBoards) { boardInfo = builtinDetails(); return; }
   try {
     const info = await (await api('/api/board?fqbn=' + encodeURIComponent(fullFqbn()))).json();
     if (!info.error) boardInfo.upload = info.upload;
