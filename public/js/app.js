@@ -16,7 +16,20 @@ function apiBase() {
   try { v = localStorage.getItem('webide.apiBase') || ''; } catch {}
   return (v || window.WEBIDE_CONFIG?.apiBase || '').replace(/\/+$/, '');
 }
-const api = (path, opts) => fetch(apiBase() + path, opts);
+function serverHelp(detail) {
+  const where = apiBase() || location.origin;
+  return `No compile server reachable at ${where}${detail ? ` (${detail})` : ''}.\n` +
+    'GitHub Pages only hosts the editor; compiling needs the compile server. Deploy it (README → "Deploy to Render"), ' +
+    'then click the status bar at the bottom to set its URL.';
+}
+
+async function api(path, opts) {
+  let r;
+  try { r = await fetch(apiBase() + path, opts); } catch { throw new Error(serverHelp()); }
+  // Anything that is not JSON (e.g. a GitHub Pages 404/405 page) means there is no API here
+  if (!(r.headers.get('content-type') || '').includes('application/json')) throw new Error(serverHelp(`HTTP ${r.status}`));
+  return r;
+}
 
 async function checkServer() {
   const el = $('serverStatus');
@@ -444,6 +457,10 @@ async function compile() {
   const fqbn = fullFqbn();
   showBottom('output');
   $('output').textContent = '';
+  if (!fqbn) {
+    log('No board list: the compile server is not connected.\n' + serverHelp(), 'err');
+    return null;
+  }
   log(`Compiling ${root.main} for ${fqbn}…`, 'info');
   setStatus('Compiling…');
   const t0 = performance.now();
