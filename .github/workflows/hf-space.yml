@@ -1,0 +1,55 @@
+name: Deploy compile server to Hugging Face Spaces
+
+# Free Docker hosting without a credit card. Needs the HF_TOKEN secret (a Hugging Face
+# access token with "write" permission). Optional variable HF_SPACE sets the Space name.
+on:
+  push:
+    branches: [main]
+    paths: [Dockerfile, server.js, package.json, package-lock.json, 'public/**', .github/workflows/hf-space.yml]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      HF_SPACE: ${{ vars.HF_SPACE || 'webide' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check token
+        if: env.HF_TOKEN == ''
+        run: echo "::warning::HF_TOKEN secret is not set; skipping the Hugging Face deploy"
+
+      - name: Push to the Space
+        if: env.HF_TOKEN != ''
+        run: |
+          pip install --quiet huggingface_hub
+          python - <<'EOF'
+          import os, re
+          from huggingface_hub import HfApi
+
+          api = HfApi(token=os.environ["HF_TOKEN"])
+          user = api.whoami()["name"]
+          space = os.environ["HF_SPACE"]
+          repo = f"{user}/{space}"
+          api.create_repo(repo, repo_type="space", space_sdk="docker", exist_ok=True)
+
+          # Spaces read their settings from the README front matter
+          with open("README.md", "w") as f:
+              f.write(
+                  "---\ntitle: Web IDE compiler\nemoji: 🔧\ncolorFrom: green\ncolorTo: blue\n"
+                  "sdk: docker\napp_port: 10000\npinned: false\n---\n\n"
+                  f"Compile server for https://github.com/{os.environ['GITHUB_REPOSITORY']}\n"
+              )
+          api.upload_folder(
+              folder_path=".", repo_id=repo, repo_type="space",
+              ignore_patterns=[".git/*", ".github/*", "node_modules/*", "dist/*", "render.yaml"],
+              commit_message=f"Deploy {os.environ['GITHUB_SHA'][:7]}",
+          )
+          host = re.sub(r"[^a-z0-9-]", "-", f"{user}-{space}".lower())
+          print(f"Space: https://huggingface.co/spaces/{repo}")
+          print(f"Compile server URL: https://{host}.hf.space")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write(f"Compile server URL: **https://{host}.hf.space**\n")
+          EOF

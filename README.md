@@ -4,7 +4,7 @@ An online IDE that runs in the browser: write code, import sketches from any Git
 
 **Open the IDE:** https://hiibrarahmad.github.io/webide/ (Chrome or Edge on desktop)
 
-[![Deploy compile server to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/hiibrarahmad/webide)
+The compile server deploys to **Hugging Face Spaces** (free, no credit card) through GitHub Actions. Render (`render.yaml`) also works but asks for a card.
 
 ## How it works
 
@@ -37,13 +37,13 @@ Browser (GitHub Pages)                         Compile server (Docker, e.g. Rend
 
 ## Setup (owner)
 
-1. **Deploy the compile server.** Click *Deploy to Render* above and sign in with GitHub. The first build takes 15–25 minutes because it installs the ESP32 toolchain. Then copy the URL, e.g. `https://webide-compiler.onrender.com`.
+1. **Deploy the compile server (free, no card).** Create a [Hugging Face](https://huggingface.co/join) account, then an [access token](https://huggingface.co/settings/tokens) with **Write** permission. Add it to this repo as the Actions secret `HF_TOKEN` and run the *Deploy compile server to Hugging Face Spaces* workflow. The URL is shown in the run summary, e.g. `https://hiibrarahmad-webide.hf.space`. The first build takes 15–25 minutes.
 2. **Point the IDE at it.** In this repo go to *Settings → Secrets and variables → Actions → Variables* and add `COMPILE_SERVER_URL` = that URL. Then re-run the *Deploy IDE to GitHub Pages* workflow.
 3. Open https://hiibrarahmad.github.io/webide/. The status bar should say **Compile server: online**.
 
 Anyone can also point the IDE at their own compile server by clicking the status-bar indicator.
 
-> On Render's free plan the server sleeps after 15 minutes idle. The first compile after that waits about a minute while it wakes up. The free plan has 512 MB RAM, which fits AVR comfortably; ESP32 builds are heavier, so use a paid instance if they run out of memory.
+> Free Spaces sleep after 48 hours without use; the first request after that waits while it starts up.
 
 The server also serves the full IDE, so the Render URL works as the IDE on its own.
 
