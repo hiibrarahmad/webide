@@ -45,7 +45,7 @@ Anyone can also point the IDE at their own compile server by clicking the status
 
 > Free Spaces sleep after 48 hours without use; the first request after that waits while it starts up.
 
-The server also serves the full IDE, so the Render URL works as the IDE on its own.
+The server also serves the full IDE, so the Space URL works as the IDE on its own.
 
 ## Server settings (environment variables)
 
@@ -73,7 +73,7 @@ npm start            # http://localhost:3000
 - `public/js/avr.js`: Intel HEX parser and STK500 v1/v2 flasher over Web Serial
 - `public/js/github.js`: GitHub importer
 - `scripts/build-static.mjs`: builds the GitHub Pages site into `dist/`
-- `Dockerfile`, `render.yaml`: compile server deployment
+- `Dockerfile`, `.github/workflows/hf-space.yml`: compile server deployment (`render.yaml` for Render)
 
 ## Troubleshooting uploads
 - **"Failed to open serial port"**: Windows refused to open the port.
