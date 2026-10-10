@@ -20,24 +20,57 @@ on:
 
 permissions:
   contents: write
-  packages: read
+
+env:
+  ARDUINO_CLI_VERSION: 1.5.1
+  ESP32_INDEX: https://espressif.github.io/arduino-esp32/package_esp32_index.json
 
 jobs:
   compile:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    container:
-      # Prebuilt by docker.yml: arduino-cli with the AVR and ESP32 cores installed
-      image: ghcr.io/${{ github.repository }}:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-      options: --user root
-    env:
-      # The cores live in the image user's home
-      HOME: /home/node
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
+        with:
+          sparse-checkout: |
+            compile.js
+            scripts/ci-compile.mjs
+
+      - name: Pick core
+        id: core
+        env:
+          FQBN: ${{ inputs.fqbn }}
+        run: |
+          if ! [[ "$FQBN" =~ ^([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+): ]]; then echo "Invalid FQBN"; exit 1; fi
+          echo "platform=${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+
+      # Core, libraries and the compiled-core cache are saved once per platform,
+      # so later builds skip the download
+      - name: Restore Arduino cache
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.arduino15
+            ~/.cache/arduino
+            ~/Arduino/libraries
+          key: arduino-${{ steps.core.outputs.platform }}-${{ env.ARDUINO_CLI_VERSION }}-v1
+
+      - name: Install arduino-cli
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR="$HOME/bin" sh -s "$ARDUINO_CLI_VERSION" > /dev/null
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Install core
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          PLATFORM: ${{ steps.core.outputs.platform }}
+        run: |
+          arduino-cli core update-index --additional-urls "$ESP32_INDEX"
+          arduino-cli core install "$PLATFORM" --additional-urls "$ESP32_INDEX"
+          arduino-cli lib update-index
+
       - name: Compile
         run: node scripts/ci-compile.mjs
         env:
