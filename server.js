@@ -1,22 +1,16 @@
 // Web IDE backend: compiles Arduino sketches with arduino-cli and manages libraries.
 // Flashing and serial happen in the browser via Web Serial, so the board stays on the user's PC.
 import express from 'express';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { cli, compileSketch, FQBN_RE } from './compile.js';
 
-const run = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
-const CLI = process.env.ARDUINO_CLI || 'arduino-cli';
 const JOBS = process.env.COMPILE_JOBS || '0';
 const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT_COMPILES || 2);
 const ALLOW_LIB_INSTALL = process.env.ALLOW_LIB_INSTALL !== 'false';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '*').split(',').map(s => s.trim());
-const FQBN_RE = /^[\w.-]+:[\w.-]+:[\w.-]+(:[\w.=,-]+)?$/;
 
 const app = express();
 app.set('trust proxy', true);
@@ -67,10 +61,6 @@ app.get('/vendor/esptool.js', (_req, res) =>
 app.get('/vendor/jszip.min.js', (_req, res) =>
   res.sendFile(path.join(__dirname, 'node_modules/jszip/dist/jszip.min.js')));
 
-async function cli(args, opts = {}) {
-  return run(CLI, [...args, '--no-color'], { maxBuffer: 64 * 1024 * 1024, timeout: 10 * 60 * 1000, ...opts });
-}
-
 // Boards from installed cores
 let boardsCache = null;
 app.get('/api/boards', async (_req, res) => {
@@ -119,75 +109,11 @@ function uploadInfo(fqbn, p) {
   return { method: 'download', note: `Browser upload is not supported for ${fqbn} (${tool || 'unknown tool'}); download the binary instead.` };
 }
 
-function safeRel(p) {
-  const norm = path.posix.normalize(String(p).replace(/\\/g, '/')).replace(/^\/+/, '');
-  if (!norm || norm.startsWith('..') || norm.includes('/../')) throw new Error(`bad path: ${p}`);
-  return norm;
-}
-
 // Compile: { fqbn, files: [{ path, content }] } -> { log, binary(base64), format, address }
 app.post('/api/compile', rateLimit(20, 60 * 1000), async (req, res) => {
   const { fqbn, files } = req.body || {};
-  if (!FQBN_RE.test(fqbn || '')) return res.status(400).json({ error: 'Select a valid board' });
-  if (!Array.isArray(files) || !files.length) return res.status(400).json({ error: 'No files' });
-
-  try { files.forEach(f => safeRel(f.path)); } catch (e) { return res.status(400).json({ error: e.message }); }
-  // The sketch folder must be named after the main .ino
-  const inos = files.filter(f => /^[^/]+\.ino$/i.test(safeRel(f.path)));
-  if (!inos.length) return res.status(400).json({ error: 'Project needs a .ino file at the top level' });
-  // build_opt.h is passed straight to the compiler; block flags that can run arbitrary programs
-  const opt = files.find(f => safeRel(f.path) === 'build_opt.h');
-  if (opt && /-(specs|fplugin|wrapper|B|iplugindir)|@/.test(opt.content || ''))
-    return res.status(400).json({ error: 'build_opt.h contains flags that are not allowed on this server' });
-  const main = path.posix.basename(inos[0].path, '.ino').replace(/[^\w-]/g, '_') || 'sketch';
-
-  const work = await fs.mkdtemp(path.join(os.tmpdir(), 'webide-'));
-  const sketchDir = path.join(work, main);
-  const outDir = path.join(work, 'out');
-  try {
-    for (const f of files) {
-      let rel = safeRel(f.path);
-      if (f === inos[0]) rel = `${main}.ino`;
-      const dest = path.join(sketchDir, rel);
-      await fs.mkdir(path.dirname(dest), { recursive: true });
-      await fs.writeFile(dest, f.content ?? '');
-    }
-    let log;
-    try {
-      const r = await withCompileSlot(() =>
-        cli(['compile', '--fqbn', fqbn, '--output-dir', outDir, '--warnings', 'default', '--jobs', JOBS, sketchDir]));
-      log = r.stdout + r.stderr;
-    } catch (e) {
-      const msg = String((e.stdout || '') + (e.stderr || e.message)).split(sketchDir).join('');
-      return res.status(422).json({ error: 'Compilation failed', log: msg });
-    }
-    log = log.split(sketchDir).join('');
-
-    const out = await fs.readdir(outDir);
-    const hex = out.find(f => f.endsWith('.ino.hex'));
-    const merged = out.find(f => f.endsWith('.ino.merged.bin'));
-    const bin = out.find(f => f.endsWith('.ino.bin'));
-    let result;
-    if (merged) {
-      // Merged image is padded to full flash size; drop the trailing 0xFF so uploads are fast
-      const buf = await fs.readFile(path.join(outDir, merged));
-      let end = buf.length;
-      while (end > 0 && buf[end - 1] === 0xff) end--;
-      end = Math.ceil(end / 4) * 4;
-      result = { format: 'bin', address: 0, binary: buf.subarray(0, end).toString('base64'), filename: `${main}.merged.bin` };
-    } else if (hex) {
-      result = { format: 'hex', binary: Buffer.from(await fs.readFile(path.join(outDir, hex))).toString('base64'), filename: `${main}.hex` };
-    } else if (bin) {
-      result = { format: 'bin', address: 0x10000, binary: (await fs.readFile(path.join(outDir, bin))).toString('base64'), filename: `${main}.bin` };
-    } else {
-      return res.status(500).json({ error: 'No firmware produced', log });
-    }
-    res.json({ log, ...result });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  } finally {
-    fs.rm(work, { recursive: true, force: true }).catch(() => {});
-  }
+  const { status, body } = await compileSketch({ fqbn, files, jobs: JOBS, slot: withCompileSlot });
+  res.status(status).json(body);
 });
 
 // Libraries

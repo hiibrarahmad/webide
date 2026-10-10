@@ -3,7 +3,7 @@ name: Build compile server image
 on:
   push:
     branches: [main]
-    paths: [Dockerfile, server.js, package.json, package-lock.json, .github/workflows/docker.yml]
+    paths: [Dockerfile, server.js, compile.js, package.json, package-lock.json, .github/workflows/docker.yml]
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,48 @@
+name: Compile sketch
+run-name: Compile ${{ inputs.build_id }}
+
+# Started by the web IDE (GitHub Pages) through the GitHub API; free compile backend.
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: Unique build id chosen by the IDE
+        required: true
+        type: string
+      fqbn:
+        description: Board FQBN, e.g. arduino:avr:uno
+        required: true
+        type: string
+      sketch:
+        description: gzip + base64 JSON {files:[{path,content}]}
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      # Prebuilt by docker.yml: arduino-cli with the AVR and ESP32 cores installed
+      image: ghcr.io/${{ github.repository }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      options: --user root
+    env:
+      # The cores live in the image user's home
+      HOME: /home/node
+    steps:
+      - uses: actions/checkout@v5
+      - name: Compile
+        run: node scripts/ci-compile.mjs
+        env:
+          BUILD_ID: ${{ inputs.build_id }}
+          FQBN: ${{ inputs.fqbn }}
+          SKETCH: ${{ inputs.sketch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}

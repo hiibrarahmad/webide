@@ -1,11 +1,9 @@
 name: Deploy compile server to Hugging Face Spaces
 
-# Free Docker hosting without a credit card. Needs the HF_TOKEN secret (a Hugging Face
-# access token with "write" permission). Optional variable HF_SPACE sets the Space name.
+# Docker Spaces need a Hugging Face PRO subscription, so this only runs when started by hand.
+# Needs the HF_TOKEN secret (a Hugging Face access token with "write" permission).
+# Optional variable HF_SPACE sets the Space name.
 on:
-  push:
-    branches: [main]
-    paths: [Dockerfile, server.js, package.json, package-lock.json, 'public/**', .github/workflows/hf-space.yml]
   workflow_dispatch:
 
 jobs:
