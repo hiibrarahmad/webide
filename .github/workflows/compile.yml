@@ -17,6 +17,11 @@ on:
         description: gzip + base64 JSON {files:[{path,content}]}
         required: true
         type: string
+      options:
+        description: 'JSON: {"debug": bool, "urls": [extra Boards Manager URLs]}'
+        required: false
+        type: string
+        default: '{}'
 
 permissions:
   contents: write
@@ -40,9 +45,13 @@ jobs:
         id: core
         env:
           FQBN: ${{ inputs.fqbn }}
+          OPTIONS: ${{ inputs.options }}
         run: |
           if ! [[ "$FQBN" =~ ^([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+): ]]; then echo "Invalid FQBN"; exit 1; fi
           echo "platform=${BASH_REMATCH[1]}:${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+          # Extra Boards Manager URLs for third-party boards (https only)
+          URLS=$(node -e 'try { const o = JSON.parse(process.env.OPTIONS || "{}"); console.log((o.urls || []).filter(u => typeof u === "string" && u.startsWith("https://") && u.endsWith(".json") && !/[ ,"$`;]/.test(u)).join(",")) } catch { console.log("") }')
+          echo "urls=${URLS:+$URLS,}$ESP32_INDEX" >> "$GITHUB_OUTPUT"
 
       # Core, libraries and the compiled-core cache are saved once per platform,
       # so later builds skip the download
@@ -66,9 +75,10 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         env:
           PLATFORM: ${{ steps.core.outputs.platform }}
+          URLS: ${{ steps.core.outputs.urls }}
         run: |
-          arduino-cli core update-index --additional-urls "$ESP32_INDEX"
-          arduino-cli core install "$PLATFORM" --additional-urls "$ESP32_INDEX"
+          arduino-cli core update-index --additional-urls "$URLS"
+          arduino-cli core install "$PLATFORM" --additional-urls "$URLS"
           arduino-cli lib update-index
 
       - name: Compile
@@ -77,5 +87,8 @@ jobs:
           BUILD_ID: ${{ inputs.build_id }}
           FQBN: ${{ inputs.fqbn }}
           SKETCH: ${{ inputs.sketch }}
+          OPTIONS: ${{ inputs.options }}
+          # Allows libraries.txt entries that are git URLs or .zip links
+          ARDUINO_LIBRARY_ENABLE_UNSAFE_INSTALL: "true"
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}

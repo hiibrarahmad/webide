@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  # Weekly refresh of the bundled library index
+  schedule:
+    - cron: '17 3 * * 1'
 
 permissions:
   contents: read

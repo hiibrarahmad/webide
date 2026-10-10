@@ -1,7 +1,12 @@
-import { flashAvr } from './avr.js';
+import { flashAvr, readAvrSignature } from './avr.js';
 import { importRepo } from './github.js';
+import { allBoards, customBoards, saveCustomBoards, boardUrls, UPLOAD_METHODS, avrChipName } from './boards.js';
+import { EXAMPLES, DEBUG_HEADER, DEFAULT_SKETCH } from './examples.js';
+import { Plotter } from './plotter.js';
+import { Debugger, parseSymbols } from './debugger.js';
 
 const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 const store = {
   get(k, d) { try { const v = localStorage.getItem('webide.' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) {
@@ -9,40 +14,67 @@ const store = {
     catch { log('Could not save to browser storage (quota full?). Download your project as .zip.', 'err'); }
   },
 };
+const b64ToBytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+function bytesToB64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+const fmtBytes = n => (n >= 1048576 ? `${(n / 1048576).toFixed(2)} MB` : n >= 1024 ? `${(n / 1024).toFixed(1)} KB` : `${n} B`);
 
-// Compile server: same origin by default; GitHub Pages builds set config.js, users can override
+// ---------- Output / status ----------
+function log(text, cls = '') {
+  const out = $('output');
+  const span = document.createElement('span');
+  if (cls) span.className = cls;
+  span.textContent = text.endsWith('\n') ? text : text + '\n';
+  out.appendChild(span);
+  out.scrollTop = out.scrollHeight;
+}
+// A clickable action inside the Output log (for steps that need a fresh user click)
+function logAction(text, label, fn) {
+  const out = $('output');
+  const span = document.createElement('span');
+  span.className = 'info';
+  span.textContent = text + ' ';
+  const btn = document.createElement('button');
+  btn.className = 'btn sm primary';
+  btn.textContent = label;
+  btn.onclick = () => { btn.disabled = true; fn(); };
+  span.append(btn, '\n');
+  out.appendChild(span);
+  out.scrollTop = out.scrollHeight;
+}
+const setStatus = t => { $('status').textContent = t; };
+function progress(frac) {
+  const el = $('progress');
+  if (frac == null) return el.classList.add('hidden');
+  el.classList.remove('hidden');
+  el.firstElementChild.style.width = `${Math.round(frac * 100)}%`;
+}
+
+// ---------- Compile backends ----------
 function apiBase() {
   let v = '';
   try { v = localStorage.getItem('webide.apiBase') || ''; } catch {}
   return (v || window.WEBIDE_CONFIG?.apiBase || '').replace(/\/+$/, '');
 }
-function serverHelp(detail) {
-  const where = apiBase() || location.origin;
-  return `No compile server reachable at ${where}${detail ? ` (${detail})` : ''}.\n` +
-    'GitHub Pages only hosts the editor; compiling needs the compile server. Deploy it (README → "Deploy to Render"), ' +
-    'then click the status bar at the bottom to set its URL.';
-}
-
 async function api(path, opts) {
   let r;
-  try { r = await fetch(apiBase() + path, opts); } catch { throw new Error(serverHelp()); }
-  // Anything that is not JSON (e.g. a GitHub Pages 404/405 page) means there is no API here
-  if (!(r.headers.get('content-type') || '').includes('application/json')) throw new Error(serverHelp(`HTTP ${r.status}`));
+  try { r = await fetch(apiBase() + path, opts); } catch { throw new Error(`No compile server reachable at ${apiBase() || location.origin}`); }
+  // Anything that is not JSON (e.g. a GitHub Pages 404 page) means there is no API here
+  if (!(r.headers.get('content-type') || '').includes('application/json')) throw new Error(`No compile server at ${apiBase() || location.origin} (HTTP ${r.status})`);
   return r;
 }
 
 let serverOnline = false;
-
 async function checkServer() {
   const el = $('serverStatus');
-  el.textContent = '● Compile server: connecting…';
-  el.title = 'Click to set up compiling';
-  // Free hosting tiers sleep when idle; the first request can take up to a minute
-  const slow = setTimeout(() => (el.textContent = '● Compile server: waking up (can take ~1 min)…'), 4000);
+  el.textContent = '● Connecting…';
+  const slow = setTimeout(() => (el.textContent = '● Waking up compile server…'), 4000);
   try {
     const r = await api('/api/health');
-    if (!r.ok) throw new Error(r.status);
-    serverOnline = true;
+    serverOnline = r.ok;
   } catch {
     serverOnline = false;
   } finally {
@@ -52,25 +84,25 @@ async function checkServer() {
   return serverOnline;
 }
 
+function ghBuild() {
+  const get = k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } };
+  return { repo: get('webide.ghBuildRepo') || window.WEBIDE_CONFIG?.buildRepo || '', token: get('webide.ghBuildToken') };
+}
+
 function renderBackendStatus() {
   const el = $('serverStatus');
   const gh = ghBuild();
   if (serverOnline) {
-    el.textContent = '● Compile server: online';
-    el.className = 'online';
+    el.textContent = '● Compile server';
+    el.className = 'sb-item online';
   } else if (gh.token && gh.repo) {
-    el.textContent = `● Compiling on GitHub Actions (${gh.repo})`;
-    el.className = 'online';
+    el.textContent = '● GitHub Actions';
+    el.className = 'sb-item online';
+    el.title = `Compiling on GitHub Actions (${gh.repo}). Click to change.`;
   } else {
-    el.textContent = '● Compiling not set up (click here)';
-    el.className = 'offline';
+    el.textContent = '● Compiling not set up';
+    el.className = 'sb-item offline';
   }
-}
-
-// ---------- GitHub Actions builds (free compile backend) ----------
-function ghBuild() {
-  const get = k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } };
-  return { repo: get('webide.ghBuildRepo') || window.WEBIDE_CONFIG?.buildRepo || '', token: get('webide.ghBuildToken') };
 }
 
 function configureServer() {
@@ -86,19 +118,11 @@ function configureServer() {
     set('webide.ghBuildRepo', $('ghBuildRepo').value.trim().replace(/^https:\/\/github\.com\//, '').replace(/\/+$/, ''));
     set('webide.ghBuildToken', $('ghBuildToken').value.trim());
     set('webide.apiBase', $('serverUrl').value.trim());
-    checkServer().then(ok => ok && loadBoards());
+    checkServer().then(() => loadBoards());
   };
 }
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-function bytesToB64(bytes) {
-  let s = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(s);
-}
-
-async function githubCompile(fqbn, files) {
+async function githubCompile(fqbn, files, options) {
   const { repo, token } = ghBuild();
   const gh = (path, opts = {}) => fetch(`https://api.github.com/repos/${repo}${path}`, {
     cache: 'no-store',
@@ -113,21 +137,22 @@ async function githubCompile(fqbn, files) {
   const start = await gh('/actions/workflows/compile.yml/dispatches', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ref: 'main', inputs: { build_id: id, fqbn, sketch } }),
+    body: JSON.stringify({ ref: 'main', inputs: { build_id: id, fqbn, sketch, options: JSON.stringify(options) } }),
   });
   if (!start.ok) {
     const msg = (await start.json().catch(() => ({}))).message || start.statusText;
     const hint = start.status === 401 ? 'The GitHub token is invalid or expired.'
       : start.status === 403 || start.status === 404 ? `The token cannot run workflows on ${repo}. Check the repository name and that the token has Actions and Contents set to "Read and write".`
+      : start.status === 422 ? 'The repository\'s compile workflow is out of date; update your fork from hiibrarahmad/webide.'
       : '';
     throw new Error(`Could not start the GitHub build (${start.status} ${msg}). ${hint}`);
   }
-  log(`Build queued on GitHub Actions (${repo}); this usually takes 1–3 minutes…`, 'info');
+  log(`Build queued on GitHub Actions (${repo})…`, 'info');
 
   const t0 = Date.now();
   let runUrl = null;
   for (let i = 0; ; i++) {
-    await sleep(i < 6 ? 5000 : 4000);
+    await sleep(i < 4 ? 3000 : 4000);
     setStatus(`Compiling on GitHub Actions… ${Math.round((Date.now() - t0) / 1000)}s`);
     const res = await gh(`/contents/result.json?ref=ide-build/${id}`, { headers: { Accept: 'application/vnd.github.raw' } });
     if (res.ok) {
@@ -142,55 +167,17 @@ async function githubCompile(fqbn, files) {
         runUrl = run.html_url;
         log(`Follow the build: ${runUrl}`);
       }
-      // The job publishes result.json even when the sketch has errors, so a failed job means the build itself broke
+      // The job publishes result.json even for sketch errors, so a failed job means the build itself broke
       if (run?.status === 'completed' && run.conclusion !== 'success') throw new Error(`The GitHub build job ${run.conclusion}: ${run.html_url}`);
     }
     if (Date.now() - t0 > 20 * 60 * 1000) throw new Error('Timed out waiting for the GitHub build' + (runUrl ? `: ${runUrl}` : ''));
   }
 }
 
-const BLINK = `// Blink the built-in LED and print to the serial monitor
-
-void setup() {
-  pinMode(LED_BUILTIN, OUTPUT);
-  Serial.begin(115200);
-}
-
-void loop() {
-  digitalWrite(LED_BUILTIN, HIGH);
-  Serial.println("LED on");
-  delay(500);
-  digitalWrite(LED_BUILTIN, LOW);
-  Serial.println("LED off");
-  delay(500);
-}
-`;
-
-// ---------- Output / status ----------
-function log(text, cls = '') {
-  const out = $('output');
-  const span = document.createElement('span');
-  if (cls) span.className = cls;
-  span.textContent = text.endsWith('\n') ? text : text + '\n';
-  out.appendChild(span);
-  out.scrollTop = out.scrollHeight;
-}
-const setStatus = t => { $('status').textContent = t; };
-function progress(frac) {
-  const el = $('progress');
-  if (frac == null) return el.classList.add('hidden');
-  el.classList.remove('hidden');
-  el.firstElementChild.style.width = `${Math.round(frac * 100)}%`;
-}
-function showBottom(name) {
-  document.querySelectorAll('.bottom-tabs > button').forEach(b => b.classList.toggle('active', b.dataset.bpanel === name));
-  document.querySelectorAll('.bpanel').forEach(p => p.classList.toggle('active', p.id === 'bpanel-' + name));
-}
-
 // ---------- Projects ----------
 let projects = store.get('projects', null);
 if (!projects || !Object.keys(projects).length) {
-  projects = { blink: { name: 'Blink', files: { 'Blink.ino': BLINK }, open: ['Blink.ino'], active: 'Blink.ino' } };
+  projects = { blink: { name: 'Blink', files: { 'Blink.ino': DEFAULT_SKETCH }, open: ['Blink.ino'], active: 'Blink.ino' } };
 }
 let currentId = store.get('current', Object.keys(projects)[0]);
 if (!projects[currentId]) currentId = Object.keys(projects)[0];
@@ -210,7 +197,7 @@ function createProject(name, files, active) {
   const id = newId();
   const paths = Object.keys(files);
   active ||= paths.find(p => p.endsWith('.ino')) || paths[0];
-  projects[id] = { name, files, open: active ? [active] : [], active };
+  projects[id] = { name, files: { ...files }, open: active ? [active] : [], active };
   switchProject(id);
 }
 
@@ -222,22 +209,18 @@ function switchProject(id) {
   renderTree();
   renderTabs();
   openFile(project().active);
+  renderSketchLibs();
 }
 
 // ---------- Editor ----------
 let editor = null;
 const models = new Map();
+let breakDecorations = null;
 
 function languageFor(path) {
   if (/\.(ino|pde|c|cc|cpp|cxx|h|hh|hpp|hxx)$/i.test(path)) return 'cpp';
-  if (/\.json$/i.test(path)) return 'json';
-  if (/\.md$/i.test(path)) return 'markdown';
-  if (/\.py$/i.test(path)) return 'python';
-  if (/\.html?$/i.test(path)) return 'html';
-  if (/\.js$/i.test(path)) return 'javascript';
-  if (/\.css$/i.test(path)) return 'css';
-  if (/\.ya?ml$/i.test(path)) return 'yaml';
-  return 'plaintext';
+  const map = { json: 'json', md: 'markdown', py: 'python', html: 'html', htm: 'html', js: 'javascript', css: 'css', yml: 'yaml', yaml: 'yaml' };
+  return map[path.split('.').pop().toLowerCase()] || 'plaintext';
 }
 
 function getModel(path) {
@@ -248,7 +231,7 @@ function getModel(path) {
   model.onDidChangeContent(() => {
     project().files[path] = model.getValue();
     clearTimeout(timer);
-    timer = setTimeout(saveProjects, 400);
+    timer = setTimeout(() => { saveProjects(); if (path.endsWith('libraries.txt')) renderSketchLibs(); }, 400);
   });
   models.set(path, model);
   return model;
@@ -259,17 +242,21 @@ function disposeModels() {
   models.clear();
 }
 
-function openFile(path) {
+function openFile(path, line) {
   const p = project();
-  if (!path || !(path in p.files)) {
-    path = p.open.find(f => f in p.files) || Object.keys(p.files)[0];
-  }
+  if (!path || !(path in p.files)) path = p.open.find(f => f in p.files) || Object.keys(p.files)[0];
   $('emptyEditor').classList.toggle('hidden', !!path);
   if (!path) { editor?.setModel(null); p.active = null; renderTabs(); renderTree(); return; }
   if (!p.open.includes(path)) p.open.push(path);
   p.active = path;
-  editor?.setModel(getModel(path));
-  editor?.focus();
+  if (editor) {
+    editor.setModel(getModel(path));
+    if (line) {
+      editor.revealLineInCenter(line);
+      editor.setPosition({ lineNumber: line, column: 1 });
+    }
+    editor.focus();
+  }
   saveProjects();
   renderTabs();
   renderTree();
@@ -291,20 +278,43 @@ function renderTabs() {
     const tab = document.createElement('div');
     tab.className = 'tab' + (path === p.active ? ' active' : '');
     tab.title = path;
-    tab.innerHTML = `<span class="label"></span><span class="x" title="Close">×</span>`;
+    tab.innerHTML = '<span class="label"></span><span class="x" title="Close"><svg><use href="#i-x"/></svg></span>';
     tab.querySelector('.label').textContent = path.split('/').pop();
-    tab.onclick = e => e.target.classList.contains('x') ? closeFile(path) : openFile(path);
+    tab.onclick = e => (e.target.closest('.x') ? closeFile(path) : openFile(path));
     el.appendChild(tab);
   }
 }
 
+// Find a project file from a name the board or compiler printed (often just the basename)
+function resolveFile(name) {
+  const files = Object.keys(project().files);
+  const root = sketchRoot();
+  const want = name.replace(/\\/g, '/').replace(/^\/+/, '');
+  const inRoot = root ? joinRoot(root.dir, want) : want;
+  if (inRoot in project().files) return inRoot;
+  if (want in project().files) return want;
+  const base = want.split('/').pop();
+  if (root && /\.ino$/.test(base)) {
+    // The build renames the main sketch after its folder; map it back
+    const sameDir = files.find(f => f === joinRoot(root.dir, base));
+    if (sameDir) return sameDir;
+    if (base === root.main.split('/').pop() || !files.some(f => f.endsWith('/' + base) || f === base)) return root.main;
+  }
+  return files.find(f => f.split('/').pop() === base) || null;
+}
+
+function openLocation(file, line) {
+  const path = resolveFile(file);
+  if (path) openFile(path, line);
+}
+
 // ---------- File tree ----------
+const joinRoot = (dir, rel) => (dir ? dir + '/' + rel : rel);
 function sketchRoot() {
   const p = project();
   const paths = Object.keys(p.files);
-  const dirOf = f => f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '';
+  const dirOf = f => (f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '');
   if (p.active?.endsWith('.ino')) return { dir: dirOf(p.active), main: p.active };
-  // If the open file lives in a sketch folder, use that folder
   if (p.active) {
     const d = dirOf(p.active);
     const ino = paths.find(f => dirOf(f) === d && f.endsWith('.ino'));
@@ -338,18 +348,19 @@ function renderTree() {
       shownDirs.add(dir);
       const li = document.createElement('li');
       li.className = 'dir';
-      li.style.paddingLeft = `${6 + i * 12}px`;
-      li.textContent = '▾ ' + parts[i];
+      li.style.paddingLeft = `${6 + i * 14}px`;
+      li.innerHTML = '<svg class="ficon"><use href="#i-folder"/></svg><span class="name"></span>';
+      li.querySelector('.name').textContent = parts[i];
       el.appendChild(li);
     }
     const li = document.createElement('li');
-    li.className = (path === p.active ? 'active ' : '') + (root?.main === path ? 'main' : '');
-    li.style.paddingLeft = `${6 + (parts.length - 1) * 12}px`;
+    li.className = (path === p.active ? 'active ' : '') + (root?.main === path ? 'sketch-main' : '');
+    li.style.paddingLeft = `${6 + (parts.length - 1) * 14}px`;
     li.title = path;
-    li.innerHTML = `<span class="name"></span><span class="ops"><button data-op="rename" title="Rename">✎</button><button data-op="delete" title="Delete">🗑</button></span>`;
+    li.innerHTML = '<svg class="ficon"><use href="#i-files"/></svg><span class="name"></span><span class="ops"><button data-op="rename" title="Rename">✎</button><button data-op="delete" title="Delete">✕</button></span>';
     li.querySelector('.name').textContent = parts[parts.length - 1];
     li.onclick = e => {
-      const op = e.target.dataset?.op;
+      const op = e.target.closest('button')?.dataset.op;
       if (op === 'rename') renameFile(path);
       else if (op === 'delete') deleteFile(path);
       else openFile(path);
@@ -358,21 +369,23 @@ function renderTree() {
   }
 }
 
-function cleanPath(s) {
-  return s.replace(/\\/g, '/').split('/').filter(x => x && x !== '.' && x !== '..').join('/');
-}
+const cleanPath = s => s.replace(/\\/g, '/').split('/').filter(x => x && x !== '.' && x !== '..').join('/');
 
-function newFile() {
+function addFile(name, content = '') {
   const p = project();
-  const root = sketchRoot();
-  const suggestion = (root?.dir ? root.dir + '/' : '') + 'new.h';
-  const name = cleanPath(prompt('File name (use / for folders):', suggestion) || '');
-  if (!name) return;
-  if (name in p.files) return alert('A file with that name already exists');
-  p.files[name] = '';
+  p.files[name] = content;
+  models.get(name)?.setValue(content);
   saveProjects();
   renderTree();
   openFile(name);
+}
+
+function newFile() {
+  const root = sketchRoot();
+  const name = cleanPath(prompt('File name (use / for folders):', joinRoot(root?.dir || '', 'new.h')) || '');
+  if (!name) return;
+  if (name in project().files) return alert('A file with that name already exists');
+  addFile(name);
 }
 
 function renameFile(path) {
@@ -392,35 +405,26 @@ function renameFile(path) {
 
 function deleteFile(path) {
   if (!confirm(`Delete ${path}?`)) return;
-  const p = project();
-  delete p.files[path];
+  delete project().files[path];
   models.get(path)?.dispose();
   models.delete(path);
   saveProjects();
   closeFile(path);
+  renderSketchLibs();
 }
 
 async function addLocalFiles(fileList) {
-  const p = project();
   let last = null;
   for (const f of fileList) {
     if (f.size > 1024 * 1024) { log(`Skipped ${f.name} (larger than 1 MB)`, 'warn'); continue; }
     const rel = cleanPath(f.webkitRelativePath || f.name);
-    p.files[rel] = await f.text();
-    models.get(rel)?.setValue(p.files[rel]);
+    project().files[rel] = await f.text();
+    models.get(rel)?.setValue(project().files[rel]);
     last = rel;
   }
   saveProjects();
   renderTree();
   if (last) openFile(last);
-}
-
-async function downloadZip() {
-  const zip = new JSZip();
-  const p = project();
-  for (const [path, content] of Object.entries(p.files)) zip.file(`${p.name}/${path}`, content);
-  const blob = await zip.generateAsync({ type: 'blob' });
-  downloadBlob(blob, `${p.name}.zip`);
 }
 
 function downloadBlob(blob, name) {
@@ -431,42 +435,57 @@ function downloadBlob(blob, name) {
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
-// ---------- Boards ----------
-let boardInfo = null; // { options, upload }
-let boardOpts = store.get('boardOpts', {});
-let builtinBoards = false;
+async function downloadZip() {
+  const zip = new JSZip();
+  const p = project();
+  for (const [path, content] of Object.entries(p.files)) zip.file(`${p.name}/${path}`, content);
+  downloadBlob(await zip.generateAsync({ type: 'blob' }), `${p.name}.zip`);
+}
 
-// Common boards that are always available, so the picker works even before the compile server answers
-const v1 = (speed, pageSize = 128) => ({ method: 'stk500v1', speed, pageSize });
-const esp = () => ({ method: 'esptool', speed: 921600 });
-const cpuOpt = values => [{
-  option: 'cpu', option_label: 'Processor',
-  values: values.map(([value, value_label], i) => ({ value, value_label, selected: i === 0 })),
-}];
-const AVR = 'Arduino AVR Boards', ESP = 'esp32';
-const BUILTIN_BOARDS = [
-  { name: 'Arduino Uno', fqbn: 'arduino:avr:uno', platform: AVR, upload: () => v1(115200) },
-  {
-    name: 'Arduino Nano', fqbn: 'arduino:avr:nano', platform: AVR,
-    options: cpuOpt([['atmega328', 'ATmega328P'], ['atmega328old', 'ATmega328P (Old Bootloader)'], ['atmega168', 'ATmega168']]),
-    upload: o => v1({ atmega328old: 57600, atmega168: 19200 }[o.cpu] || 115200),
-  },
-  {
-    name: 'Arduino Mega or Mega 2560', fqbn: 'arduino:avr:mega', platform: AVR,
-    options: cpuOpt([['atmega2560', 'ATmega2560 (Mega 2560)'], ['atmega1280', 'ATmega1280']]),
-    upload: o => (o.cpu === 'atmega1280' ? v1(57600, 256) : { method: 'stk500v2', speed: 115200, pageSize: 256 }),
-  },
-  {
-    name: 'Arduino Pro or Pro Mini', fqbn: 'arduino:avr:pro', platform: AVR,
-    options: cpuOpt([['16MHzatmega328', 'ATmega328P (5V, 16 MHz)'], ['8MHzatmega328', 'ATmega328P (3.3V, 8 MHz)']]),
-    upload: () => v1(57600),
-  },
-  { name: 'ESP32 Dev Module', fqbn: 'esp32:esp32:esp32', platform: ESP, upload: esp },
-  { name: 'ESP32S3 Dev Module', fqbn: 'esp32:esp32:esp32s3', platform: ESP, upload: esp },
-  { name: 'ESP32C3 Dev Module', fqbn: 'esp32:esp32:esp32c3', platform: ESP, upload: esp },
-  { name: 'ESP32S2 Dev Module', fqbn: 'esp32:esp32:esp32s2', platform: ESP, upload: esp },
-  { name: 'ESP32C6 Dev Module', fqbn: 'esp32:esp32:esp32c6', platform: ESP, upload: esp },
-];
+// ---------- Boards ----------
+let boardList = [];          // [{ name, fqbn, group, options?, upload?, custom?, url? }]
+let boardsFromServer = false;
+let boardInfo = null;        // { options, upload }
+let boardOpts = store.get('boardOpts', {});
+const IMPORTANT_OPTS = /^(cpu|PartitionScheme|DebugLevel|CDCOnBoot|USBMode|FlashSize|UploadSpeed)$/;
+
+async function loadBoards() {
+  boardsFromServer = false;
+  boardList = allBoards();
+  if (serverOnline) {
+    try {
+      const boards = await (await api('/api/boards')).json();
+      if (boards.error) throw new Error(boards.error);
+      boardList = [...boards.map(b => ({ ...b, group: b.platform })), ...allBoards().filter(b => b.custom)];
+      boardsFromServer = true;
+    } catch (e) {
+      log('Could not load boards from the compile server: ' + e.message, 'warn');
+    }
+  }
+  const sel = $('boardSelect');
+  sel.innerHTML = '';
+  const groups = {};
+  for (const b of boardList) (groups[b.group] ||= []).push(b);
+  for (const [group, list] of Object.entries(groups)) {
+    const og = document.createElement('optgroup');
+    og.label = group;
+    for (const b of list) og.appendChild(new Option(b.name, b.fqbn));
+    sel.appendChild(og);
+  }
+  const saved = store.get('board', 'arduino:avr:uno');
+  sel.value = boardList.some(b => b.fqbn === saved) ? saved : (boardList.find(b => b.fqbn === 'arduino:avr:uno') || boardList[0])?.fqbn;
+  renderBoardList();
+  await onBoardChange();
+}
+
+const currentBoard = () => boardList.find(b => b.fqbn === $('boardSelect').value);
+
+function fullFqbn() {
+  const base = $('boardSelect').value;
+  if (!base) return '';
+  const parts = Object.entries(boardOpts[base] || {}).map(([k, v]) => `${k}=${v}`);
+  return parts.length ? `${base}:${parts.join(',')}` : base;
+}
 
 function selectedOpts(base, options) {
   const o = {};
@@ -474,74 +493,32 @@ function selectedOpts(base, options) {
   return o;
 }
 
-function builtinDetails() {
+function localDetails() {
   const base = $('boardSelect').value;
-  const b = BUILTIN_BOARDS.find(x => x.fqbn === base);
+  const b = currentBoard();
   const options = b?.options || [];
-  return { options, upload: b ? b.upload(selectedOpts(base, options)) : { method: 'download' } };
-}
-
-async function fetchBoards() {
-  try {
-    const boards = await (await api('/api/boards')).json();
-    if (boards.error) throw new Error(boards.error);
-    builtinBoards = false;
-    return boards;
-  } catch (e) {
-    builtinBoards = true;
-    log('Compile server not connected: showing common boards only. Compiling needs the server; click the status bar at the bottom to set its URL.', 'warn');
-    return BUILTIN_BOARDS;
-  }
-}
-
-async function loadBoards() {
-  const sel = $('boardSelect');
-  try {
-    const boards = await fetchBoards();
-    const groups = {};
-    for (const b of boards) (groups[b.platform] ||= []).push(b);
-    sel.innerHTML = '';
-    for (const [platform, list] of Object.entries(groups)) {
-      const og = document.createElement('optgroup');
-      og.label = platform;
-      for (const b of list) og.appendChild(new Option(b.name, b.fqbn));
-      sel.appendChild(og);
-    }
-    const saved = store.get('board', 'arduino:avr:uno');
-    sel.value = boards.some(b => b.fqbn === saved) ? saved : (boards.find(b => b.fqbn === 'arduino:avr:uno') || boards[0])?.fqbn;
-    await onBoardChange();
-  } catch (e) {
-    log('Could not load boards: ' + e.message, 'err');
-  }
-}
-
-function fullFqbn() {
-  const base = $('boardSelect').value;
-  const opts = boardOpts[base] || {};
-  const parts = Object.entries(opts).map(([k, v]) => `${k}=${v}`);
-  return parts.length ? `${base}:${parts.join(',')}` : base;
+  return { options, upload: b?.upload ? b.upload(selectedOpts(base, options)) : { method: 'download' } };
 }
 
 async function onBoardChange() {
   const base = $('boardSelect').value;
   store.set('board', base);
-  const box = $('boardOptions');
-  box.innerHTML = '';
-  if (builtinBoards) {
-    boardInfo = builtinDetails();
+  const b = currentBoard();
+  if (!boardsFromServer || b?.custom) {
+    boardInfo = localDetails();
   } else {
     try {
       boardInfo = await (await api('/api/board?fqbn=' + encodeURIComponent(fullFqbn()))).json();
       if (boardInfo.error) throw new Error(boardInfo.error);
     } catch (e) {
-      boardInfo = builtinDetails();
-      log('Board details failed: ' + e.message, 'err');
+      boardInfo = localDetails();
+      log('Board details failed: ' + e.message, 'warn');
     }
   }
-  // Show only the options that matter most to keep the toolbar compact
-  const important = /^(cpu|PartitionScheme|FlashSize|UploadSpeed|CDCOnBoot|USBMode)$/;
-  for (const opt of boardInfo.options) {
-    if (!important.test(opt.option)) continue;
+  const box = $('boardOptions');
+  box.innerHTML = '';
+  for (const opt of boardInfo.options || []) {
+    if (!IMPORTANT_OPTS.test(opt.option)) continue;
     const s = document.createElement('select');
     s.title = opt.option_label;
     for (const v of opt.values) s.add(new Option(`${opt.option_label}: ${v.value_label}`, v.value));
@@ -553,19 +530,90 @@ async function onBoardChange() {
     };
     box.appendChild(s);
   }
+  $('sbBoard').textContent = b?.name || base;
+  $('btnEraseFlash').disabled = boardInfo.upload?.method !== 'esptool';
+  renderBoardList();
 }
 
 async function refreshUploadInfo() {
-  if (builtinBoards) { boardInfo = builtinDetails(); return; }
+  if (!boardsFromServer || currentBoard()?.custom) { boardInfo = localDetails(); return; }
   try {
     const info = await (await api('/api/board?fqbn=' + encodeURIComponent(fullFqbn()))).json();
     if (!info.error) boardInfo.upload = info.upload;
   } catch {}
 }
 
+function selectBoard(fqbn) {
+  $('boardSelect').value = fqbn;
+  onBoardChange();
+}
+
+function renderBoardList() {
+  const ul = $('boardList');
+  const q = $('boardQuery').value.trim().toLowerCase();
+  const current = $('boardSelect').value;
+  ul.innerHTML = '';
+  const shown = boardList.filter(b => !q || b.name.toLowerCase().includes(q) || b.fqbn.toLowerCase().includes(q)).slice(0, 200);
+  let group = null;
+  for (const b of shown) {
+    if (b.group !== group) {
+      group = b.group;
+      const g = document.createElement('li');
+      g.className = 'group';
+      g.textContent = group;
+      ul.appendChild(g);
+    }
+    const li = document.createElement('li');
+    li.className = b.fqbn === current ? 'selected' : '';
+    li.innerHTML = '<b></b><span></span><span class="meta"></span>';
+    li.querySelector('b').textContent = b.name;
+    li.querySelector('.meta').textContent = b.fqbn;
+    const actions = li.querySelector('span');
+    if (b.custom) {
+      const rm = document.createElement('button');
+      rm.className = 'icon-btn sm';
+      rm.title = 'Remove this board';
+      rm.innerHTML = '<svg><use href="#i-trash"/></svg>';
+      rm.onclick = e => {
+        e.stopPropagation();
+        saveCustomBoards(customBoards().filter(c => c.fqbn !== b.fqbn));
+        loadBoards();
+      };
+      actions.appendChild(rm);
+    }
+    li.onclick = () => selectBoard(b.fqbn);
+    ul.appendChild(li);
+  }
+  if (!shown.length) ul.innerHTML = '<li class="empty-row">No board matches. Use + to add it.</li>';
+}
+
+function addBoardDialog() {
+  const dlg = $('boardDialog');
+  const sel = $('nbMethod');
+  if (!sel.options.length) for (const [k, v] of Object.entries(UPLOAD_METHODS)) sel.add(new Option(v, k));
+  dlg.showModal();
+  dlg.onclose = () => {
+    if (dlg.returnValue !== 'save') return;
+    const c = {
+      name: $('nbName').value.trim(),
+      fqbn: $('nbFqbn').value.trim(),
+      url: $('nbUrl').value.trim(),
+      method: $('nbMethod').value,
+      speed: +$('nbSpeed').value || undefined,
+    };
+    if (!c.name || !/^[\w.-]+:[\w.-]+:[\w.-]+$/.test(c.fqbn)) return alert('Enter a name and a valid FQBN (vendor:architecture:board).');
+    saveCustomBoards([...customBoards().filter(x => x.fqbn !== c.fqbn), c]);
+    store.set('board', c.fqbn);
+    loadBoards();
+    log(`Added board ${c.name} (${c.fqbn}). Its core is installed on the first GitHub Actions build.`, 'ok');
+  };
+}
+
 // ---------- Compile ----------
 let lastBuild = null;
+let symbols = [];
 let busy = false;
+let debugBuild = store.get('debugBuild', false);
 
 function setBusy(b) {
   busy = b;
@@ -573,86 +621,147 @@ function setBusy(b) {
   $('btnUpload').disabled = b;
 }
 
-function setMarkers(logText, root) {
-  for (const m of models.values()) monaco.editor.setModelMarkers(m, 'arduino', []);
-  const byFile = {};
+function setDebugBuild(on) {
+  debugBuild = on;
+  store.set('debugBuild', on);
+  $('btnDebugBuild').setAttribute('aria-pressed', String(on));
+  $('chkDebugBuild').checked = on;
+  $('sbDebug').classList.toggle('hidden', !on);
+}
+
+function parseProblems(logText, root) {
+  const problems = [];
   const re = /([^\s:"']+\.(?:ino|cpp|c|h|hpp|cc|S)):(\d+):(?:(\d+):)?\s+(fatal error|error|warning):\s+(.*)/g;
   for (const m of logText.matchAll(re)) {
-    let rel = m[1].replace(/\\/g, '/').replace(/^\/+/, '');
-    // The server renames the main .ino to its sanitised name; map it back
-    if (!rel.includes('/') && rel.endsWith('.ino') && !(joinRoot(root.dir, rel) in project().files)) rel = root.main.split('/').pop();
-    let path = joinRoot(root.dir, rel);
-    if (!(path in project().files)) path = joinRoot(root.dir, rel.split('/').pop());
-    if (!(path in project().files)) continue;
-    (byFile[path] ||= []).push({
-      startLineNumber: +m[2], endLineNumber: +m[2],
-      startColumn: +(m[3] || 1), endColumn: 1000,
-      message: m[5],
-      severity: m[4] === 'warning' ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error,
+    const path = resolveFile(m[1]);
+    if (!path) continue;
+    problems.push({ path, line: +m[2], col: +(m[3] || 1), severity: m[4] === 'warning' ? 'warning' : 'error', message: m[5] });
+  }
+  return problems;
+}
+
+function showProblems(problems) {
+  for (const m of models.values()) monaco.editor.setModelMarkers(m, 'arduino', []);
+  const byFile = {};
+  for (const p of problems) {
+    (byFile[p.path] ||= []).push({
+      startLineNumber: p.line, endLineNumber: p.line, startColumn: p.col, endColumn: 1000, message: p.message,
+      severity: p.severity === 'warning' ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Error,
     });
   }
   for (const [path, markers] of Object.entries(byFile)) monaco.editor.setModelMarkers(getModel(path), 'arduino', markers);
-  return Object.keys(byFile)[0];
+
+  const ul = $('problemList');
+  ul.innerHTML = '';
+  for (const p of problems) {
+    const li = document.createElement('li');
+    li.innerHTML = '<span class="sev"></span><span class="msg"></span><span class="where"></span>';
+    li.querySelector('.sev').textContent = p.severity.toUpperCase();
+    li.querySelector('.sev').classList.add(p.severity);
+    li.querySelector('.msg').textContent = p.message;
+    li.querySelector('.where').textContent = `${p.path}:${p.line}:${p.col}`;
+    li.onclick = () => openFile(p.path, p.line);
+    ul.appendChild(li);
+  }
+  if (!problems.length) ul.innerHTML = '<li class="empty-row">No problems found.</li>';
+  const errors = problems.filter(p => p.severity === 'error').length;
+  const badge = $('problemCount');
+  badge.textContent = problems.length;
+  badge.className = 'badge ' + (errors ? 'err' : problems.length ? 'warn' : 'hidden');
 }
-const joinRoot = (dir, rel) => (dir ? dir + '/' + rel : rel);
+
+function showBuildSummary(data, ok, seconds, backend) {
+  const el = $('buildSummary');
+  el.classList.remove('hidden');
+  el.innerHTML = '';
+  const state = document.createElement('span');
+  state.className = 'state ' + (ok ? 'ok' : 'err');
+  state.innerHTML = `<svg><use href="#i-${ok ? 'check' : 'x'}"/></svg>`;
+  state.append(ok ? 'Build succeeded' : 'Build failed');
+  el.appendChild(state);
+  const sb = [];
+  for (const m of data.memory || []) {
+    if (!m.max) continue;
+    const label = m.name === 'text' ? 'Flash' : m.name === 'data' ? 'RAM' : m.name;
+    const pct = Math.round((m.size / m.max) * 100);
+    const meter = document.createElement('span');
+    meter.className = 'meter';
+    meter.innerHTML = '<span></span><span class="bar"><i></i></span><span></span>';
+    meter.children[0].textContent = label;
+    const bar = meter.querySelector('i');
+    bar.style.width = Math.min(pct, 100) + '%';
+    bar.className = pct >= 90 ? 'high' : pct >= 75 ? 'mid' : '';
+    meter.children[2].textContent = `${pct}%  ${fmtBytes(m.size)} / ${fmtBytes(m.max)}`;
+    el.appendChild(meter);
+    sb.push(`${label} ${pct}%`);
+  }
+  const facts = document.createElement('span');
+  facts.className = 'facts';
+  facts.textContent = [`${seconds.toFixed(1)}s on ${backend}`, data.binary ? `firmware ${fmtBytes(b64ToBytes(data.binary).length)}` : '', debugBuild ? 'debug build' : ''].filter(Boolean).join(' · ');
+  el.appendChild(facts);
+  $('sbMemory').textContent = sb.join(' · ');
+}
 
 async function compile() {
   const root = sketchRoot();
+  showTab('output');
+  $('output').textContent = '';
   if (!root) { log('No .ino file in this project.', 'err'); return null; }
-  const p = project();
   const prefix = root.dir ? root.dir + '/' : '';
-  const files = Object.entries(p.files)
+  const files = Object.entries(project().files)
     .filter(([path]) => path.startsWith(prefix))
     .map(([path, content]) => ({ path: path.slice(prefix.length), content }));
-  // Put the main sketch first so the server names the sketch folder after it
-  files.sort((a, b) => (a.path === root.main.slice(prefix.length) ? -1 : b.path === root.main.slice(prefix.length) ? 1 : 0));
+  // The main sketch goes first so the build names the sketch folder after it
+  const mainRel = root.main.slice(prefix.length);
+  files.sort((a, b) => (a.path === mainRel ? -1 : b.path === mainRel ? 1 : 0));
 
   const fqbn = fullFqbn();
-  showBottom('output');
-  $('output').textContent = '';
-  if (!fqbn) {
-    log('No board list: the compile server is not connected.\n' + serverHelp(), 'err');
-    return null;
-  }
-  log(`Compiling ${root.main} for ${fqbn}…`, 'info');
+  if (!fqbn) { log('Pick a board first.', 'err'); return null; }
+  log(`Compiling ${root.main} for ${fqbn}${debugBuild ? ' (debug build)' : ''}…`, 'info');
   setStatus('Compiling…');
   const t0 = performance.now();
   try {
-    let data, ok;
-    if (!serverOnline && ghBuild().token) {
-      data = await githubCompile(fqbn, files);
+    let data, ok, backend;
+    if (!serverOnline && ghBuild().token && ghBuild().repo) {
+      backend = 'GitHub Actions';
+      data = await githubCompile(fqbn, files, { debug: debugBuild, urls: boardUrls(fqbn) });
       ok = !data.error;
     } else if (!serverOnline) {
-      log('No compile backend is set up.\n' +
-        'Click "Compile server" in the bottom status bar and add a GitHub token (free builds on GitHub Actions) or a compile server URL.', 'err');
+      log('Compiling is not set up yet.', 'err');
+      logAction('Add a GitHub token (free builds on GitHub Actions) or a compile server URL:', 'Open compile settings', configureServer);
       setStatus('No compile backend');
       return null;
     } else {
+      backend = 'compile server';
       const res = await api('/api/compile', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fqbn, files }),
+        body: JSON.stringify({ fqbn, files, debug: debugBuild }),
       });
       data = await res.json();
       ok = res.ok;
     }
+    const seconds = (performance.now() - t0) / 1000;
     const out = data.log || '';
-    const firstErr = setMarkers(out, root);
+    const problems = parseProblems(out, root);
+    showProblems(problems);
+    showBuildSummary(data, ok, seconds, backend);
     if (!ok) {
       log(out, 'err');
       log(data.error || 'Compilation failed', 'err');
       setStatus('Compilation failed');
-      if (firstErr) openFile(firstErr);
+      if (problems[0]) openFile(problems[0].path, problems[0].line);
       return null;
     }
     log(out);
-    log(`Done in ${((performance.now() - t0) / 1000).toFixed(1)}s`, 'ok');
+    log(`Done in ${seconds.toFixed(1)}s`, 'ok');
     setStatus('Compiled');
     lastBuild = data;
+    symbols = parseSymbols(data.symbols);
     $('btnDownloadFw').disabled = false;
     return data;
   } catch (e) {
-    log('Compile request failed: ' + e.message, 'err');
+    log('Compile failed: ' + e.message, 'err');
     setStatus('Error');
     return null;
   }
@@ -664,30 +773,30 @@ async function verify() {
   try { await compile(); } finally { setBusy(false); }
 }
 
-const b64ToBytes = b64 => Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-
 function downloadFirmware() {
-  if (!lastBuild) return;
-  downloadBlob(new Blob([b64ToBytes(lastBuild.binary)]), lastBuild.filename);
+  if (lastBuild) downloadBlob(new Blob([b64ToBytes(lastBuild.binary)]), lastBuild.filename);
 }
 
 // ---------- Serial port ----------
-const serial = { port: null, open: false, reader: null, loop: null, decoder: null, lineStart: true };
+const serial = { port: null, open: false, reader: null, loop: null, decoder: null };
+const mon = { lines: [], partial: '', raw: [], rawLen: 0, hex: false, dirty: false, history: store.get('sendHistory', []), histIdx: -1 };
 
 function portName(port) {
   const i = port.getInfo();
-  const known = { 0x2341: 'Arduino', 0x2a03: 'Arduino', 0x1a86: 'CH340', 0x10c4: 'CP210x', 0x0403: 'FTDI', 0x303a: 'Espressif' };
+  const known = { 0x2341: 'Arduino', 0x2a03: 'Arduino', 0x1a86: 'CH340', 0x10c4: 'CP210x', 0x0403: 'FTDI', 0x303a: 'Espressif', 0x2e8a: 'Raspberry Pi' };
   return i.usbVendorId ? `${known[i.usbVendorId] || 'USB'} ${i.usbVendorId.toString(16).padStart(4, '0')}:${(i.usbProductId || 0).toString(16).padStart(4, '0')}` : 'Serial port';
 }
 
 function setPort(port) {
   serial.port = port;
   $('portLabel').textContent = port ? portName(port) : 'Select port';
+  $('btnPort').classList.toggle('connected', !!port);
+  $('sbPort').textContent = port ? portName(port) : 'No port';
 }
 
 async function selectPort() {
   if (!('serial' in navigator)) {
-    alert('Web Serial is not available. Use Chrome or Edge on desktop, over http://localhost or https.');
+    alert('Web Serial is not available. Use Chrome or Edge on desktop, over https or localhost.');
     return null;
   }
   try {
@@ -695,28 +804,68 @@ async function selectPort() {
     setPort(await navigator.serial.requestPort());
     return serial.port;
   } catch {
-    return null; // user cancelled
+    return null;
   }
 }
+const ensurePort = async () => serial.port || selectPort();
 
-async function ensurePort() {
-  return serial.port || selectPort();
+function monitorSystem(text) {
+  mon.lines.push({ t: Date.now(), s: `[${text}]`, sys: true });
+  scheduleMonitor();
 }
 
-function writeSerial(text) {
+function onSerialData(bytes) {
+  mon.raw.push(bytes);
+  mon.rawLen += bytes.length;
+  while (mon.rawLen > 16384 && mon.raw.length > 1) mon.rawLen -= mon.raw.shift().length;
+  const parts = (mon.partial + serial.decoder.decode(bytes, { stream: true })).split('\n');
+  mon.partial = parts.pop();
+  for (const raw of parts) {
+    const line = raw.replace(/\r$/, '');
+    const isDbg = dbg.handleLine(line);
+    if (!isDbg) plotter.addLine(line);
+    mon.lines.push({ t: Date.now(), s: line, dbg: isDbg });
+  }
+  if (mon.lines.length > 6000) mon.lines.splice(0, 1000);
+  scheduleMonitor();
+}
+
+function scheduleMonitor() {
+  if (mon.dirty) return;
+  mon.dirty = true;
+  requestAnimationFrame(renderMonitor);
+}
+
+function renderMonitor() {
+  mon.dirty = false;
+  if (activeTab !== 'serial') { mon.stale = true; return; }
+  mon.stale = false;
   const out = $('serialOut');
-  if ($('chkTimestamp').checked) {
-    let res = '';
-    for (const ch of text) {
-      if (serial.lineStart) res += new Date().toTimeString().slice(0, 8) + ' -> ';
-      res += ch;
-      serial.lineStart = ch === '\n';
+  if (mon.hex) {
+    const all = new Uint8Array(mon.rawLen);
+    let o = 0;
+    for (const c of mon.raw) { all.set(c, o); o += c.length; }
+    const rows = [];
+    for (let i = 0; i < all.length; i += 16) {
+      const chunk = all.subarray(i, i + 16);
+      const hex = [...chunk].map(b => b.toString(16).padStart(2, '0')).join(' ').padEnd(48);
+      const ascii = [...chunk].map(b => (b >= 32 && b < 127 ? String.fromCharCode(b) : '.')).join('');
+      rows.push(`${i.toString(16).padStart(6, '0')}  ${hex}  ${ascii}`);
     }
-    text = res;
+    out.textContent = rows.join('\n');
+  } else {
+    const filter = $('serialFilter').value.toLowerCase();
+    const hideDbg = $('chkHideDbg').checked;
+    const ts = $('chkTimestamp').checked;
+    const lines = [];
+    for (const l of mon.lines) {
+      if (hideDbg && l.dbg) continue;
+      if (filter && !l.s.toLowerCase().includes(filter)) continue;
+      lines.push(ts ? `${new Date(l.t).toTimeString().slice(0, 8)}.${String(l.t % 1000).padStart(3, '0')}  ${l.s}` : l.s);
+    }
+    if (!filter && mon.partial) lines.push(mon.partial);
+    out.textContent = lines.join('\n');
   }
-  out.append(text);
-  // Keep the monitor responsive with chatty boards
-  if (out.textContent.length > 200000) out.textContent = out.textContent.slice(-150000);
   if ($('chkAutoscroll').checked) out.scrollTop = out.scrollHeight;
 }
 
@@ -727,14 +876,15 @@ async function openMonitor() {
   try {
     await port.open({ baudRate: baud });
   } catch (e) {
-    writeSerial(`\n[Could not open port: ${e.message}]\n`);
+    monitorSystem(`Could not open port: ${e.message}`);
     return;
   }
   serial.open = true;
   serial.decoder = new TextDecoder();
-  $('btnSerial').textContent = 'Disconnect';
+  $('btnSerial').lastElementChild.textContent = 'Disconnect';
   $('serialDot').classList.add('on');
-  writeSerial(`\n[Connected @ ${baud} baud]\n`);
+  try { await port.setSignals({ dataTerminalReady: $('chkDtr').checked, requestToSend: $('chkRts').checked }); } catch {}
+  monitorSystem(`Connected @ ${baud} baud`);
   serial.loop = (async () => {
     while (serial.open && port.readable) {
       serial.reader = port.readable.getReader();
@@ -742,10 +892,10 @@ async function openMonitor() {
         for (;;) {
           const { value, done } = await serial.reader.read();
           if (done) break;
-          writeSerial(serial.decoder.decode(value, { stream: true }));
+          onSerialData(value);
         }
       } catch (e) {
-        if (serial.open) writeSerial(`\n[Read error: ${e.message}]\n`);
+        if (serial.open) monitorSystem(`Read error: ${e.message}`);
       } finally {
         serial.reader.releaseLock();
         serial.reader = null;
@@ -760,46 +910,79 @@ async function closeMonitor() {
   try { await serial.reader?.cancel(); } catch {}
   await serial.loop;
   try { await serial.port.close(); } catch {}
-  $('btnSerial').textContent = 'Connect';
+  $('btnSerial').lastElementChild.textContent = 'Connect';
   $('serialDot').classList.remove('on');
-  writeSerial('\n[Disconnected]\n');
+  monitorSystem('Disconnected');
+}
+
+async function serialWrite(text) {
+  if (!serial.open) { monitorSystem('Not connected'); return false; }
+  const w = serial.port.writable.getWriter();
+  try { await w.write(new TextEncoder().encode(text)); } finally { w.releaseLock(); }
+  return true;
 }
 
 async function sendSerial() {
   const input = $('serialInput');
-  if (!serial.open) return writeSerial('\n[Not connected]\n');
   const ending = $('lineEnding').value.replace('\\r', '\r').replace('\\n', '\n');
-  const w = serial.port.writable.getWriter();
-  try { await w.write(new TextEncoder().encode(input.value + ending)); } finally { w.releaseLock(); }
+  if (!(await serialWrite(input.value + ending))) return;
+  if (input.value && mon.history[0] !== input.value) {
+    mon.history.unshift(input.value);
+    mon.history.length = Math.min(mon.history.length, 50);
+    store.set('sendHistory', mon.history);
+  }
+  mon.histIdx = -1;
   input.value = '';
 }
 
-async function resetBoard() {
-  const port = serial.port;
-  if (!port) return;
+// Runs fn with the port closed, then reopens the monitor if it was open
+async function withPort(fn) {
+  const port = await ensurePort();
+  if (!port) { log('No port selected.', 'err'); return; }
   const wasOpen = serial.open;
-  if (!wasOpen) await port.open({ baudRate: +$('baudSelect').value });
-  await port.setSignals({ dataTerminalReady: false, requestToSend: true });
-  await new Promise(r => setTimeout(r, 100));
-  await port.setSignals({ dataTerminalReady: false, requestToSend: false });
-  if (!wasOpen) await port.close();
+  if (wasOpen) await closeMonitor();
+  try { return await fn(port); } finally { if (wasOpen) await openMonitor(); }
+}
+
+async function resetBoard() {
+  const esp = boardInfo?.upload?.method === 'esptool';
+  const pulse = async port => {
+    if (esp) {
+      // ESP auto-reset circuit: RTS pulls EN low
+      await port.setSignals({ dataTerminalReady: false, requestToSend: true });
+      await sleep(120);
+      await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+    } else {
+      // Arduino: a DTR edge resets through the auto-reset capacitor
+      await port.setSignals({ dataTerminalReady: false, requestToSend: false });
+      await sleep(120);
+      await port.setSignals({ dataTerminalReady: true, requestToSend: true });
+    }
+  };
+  if (serial.open) { await pulse(serial.port); monitorSystem('Board reset'); return; }
+  const port = await ensurePort();
+  if (!port) return;
+  await port.open({ baudRate: +$('baudSelect').value });
+  try { await pulse(port); } finally { await port.close(); }
+  log('Board reset', 'ok');
 }
 
 // ---------- Upload ----------
-async function flashEsp(port, build, upload) {
+async function espLoader(port, speed) {
   const { ESPLoader, Transport } = await import(new URL('../vendor/esptool.js', import.meta.url).href);
   const transport = new Transport(port, false);
-  const terminal = {
-    clean() {},
-    writeLine: s => log(s),
-    write: s => log(s),
-  };
-  const loader = new ESPLoader({ transport, baudrate: upload.speed, romBaudrate: 115200, terminal });
+  const terminal = { clean() {}, writeLine: s => log(s), write: s => log(s) };
+  const loader = new ESPLoader({ transport, baudrate: speed || 460800, romBaudrate: 115200, terminal });
+  return { loader, transport };
+}
+
+async function flashEsp(port, build, upload) {
+  const { loader, transport } = await espLoader(port, upload.speed);
   try {
     const chip = await loader.main();
     log(`Connected to ${chip}`, 'info');
     await loader.writeFlash({
-      fileArray: [{ data: b64ToBytes(build.binary), address: build.address }],
+      fileArray: [{ data: b64ToBytes(build.binary), address: upload.address ?? build.address ?? 0 }],
       flashMode: 'keep', flashFreq: 'keep', flashSize: 'keep',
       eraseAll: false, compress: true,
       reportProgress: (_i, written, total) => progress(written / total),
@@ -810,119 +993,293 @@ async function flashEsp(port, build, upload) {
   }
 }
 
+async function writeUf2(build) {
+  const dir = await window.showDirectoryPicker({ id: 'uf2drive', mode: 'readwrite' });
+  const fh = await dir.getFileHandle(build.filename, { create: true });
+  const w = await fh.createWritable();
+  await w.write(b64ToBytes(build.binary));
+  await w.close();
+  log(`Copied ${build.filename} to the board drive; the board restarts with the new firmware.`, 'ok');
+}
+
+async function flashUf2(build) {
+  if (!('showDirectoryPicker' in window)) {
+    downloadFirmware();
+    log('Copy the downloaded .uf2 file onto the board\'s USB drive (RPI-RP2).', 'warn');
+    return;
+  }
+  if (serial.port) {
+    // 1200-baud "touch" asks a running RP2040 sketch to reboot into its USB drive
+    try { await serial.port.open({ baudRate: 1200 }); await serial.port.close(); log('Asked the board to restart as a USB drive…'); await sleep(2500); } catch {}
+  }
+  logAction('Choose the board\'s USB drive (RPI-RP2). If it is missing, hold BOOTSEL while plugging the board in.', 'Choose drive', () =>
+    writeUf2(build).catch(e => log('Copy failed: ' + e.message, 'err')));
+}
+
 async function upload() {
   if (busy) return;
   setBusy(true);
   const wasMonitoring = serial.open;
+  let flashed = false;
   try {
     const build = await compile();
     if (!build) return;
     const info = boardInfo?.upload;
+    if (build.format === 'uf2' || info?.method === 'uf2') { await flashUf2(build); return; }
     if (!info || info.method === 'download') {
-      log(info?.note || 'Browser upload is not supported for this board; downloading the binary.', 'warn');
+      log(info?.note || 'This board cannot be flashed from the browser; the firmware is downloaded instead.', 'warn');
       downloadFirmware();
       return;
     }
     const port = await ensurePort();
     if (!port) { log('No port selected.', 'err'); return; }
     if (serial.open) await closeMonitor();
+    dbg.reset();
 
     log(`Uploading via ${info.method}…`, 'info');
     setStatus('Uploading…');
     progress(0);
     if (info.method === 'esptool') await flashEsp(port, build, info);
     else await flashAvr(port, atob(build.binary), info, s => log(s), progress);
+    flashed = true;
     log('Upload finished ✔', 'ok');
     setStatus('Uploaded');
   } catch (e) {
     log('Upload failed: ' + (e.message || e), 'err');
     if (/Failed to open serial port/i.test(e.message || '')) {
       log('The operating system refused to open the port. Check that:\n' +
-        '  • the right port is selected (🔌), not COM1 or a Bluetooth port\n' +
-        '  • no other program or tab has it open (Arduino IDE serial monitor, another Web IDE tab)\n' +
-        '  • the USB driver works: CH340 clones may need an older WCH driver (3.x) on Windows; replug the board', 'warn');
+        '  • the right port is selected, not COM1 or a Bluetooth port\n' +
+        '  • no other program or tab has it open (Arduino IDE, another Web IDE tab)\n' +
+        '  • the USB driver works: CH340 clones may need the older WCH driver 3.5 on Windows', 'warn');
     } else {
-      log('Tip: check the board type and Processor option, press Reset on the board, then try again.', 'warn');
+      log('Tip: check the board type and its options, press Reset on the board, then try again.', 'warn');
     }
     setStatus('Upload failed');
   } finally {
     progress(null);
     setBusy(false);
-    if (wasMonitoring) { showBottom('serial'); await openMonitor(); }
+    // Reopen the monitor after a serial upload (always for debug builds, so the debugger is live)
+    if (serial.port && (wasMonitoring || (flashed && debugBuild))) {
+      await openMonitor();
+      if (flashed && debugBuild) showTab('debug');
+    }
   }
+}
+
+// ---------- Board tools ----------
+async function chipInfo() {
+  const info = boardInfo?.upload;
+  showTab('output');
+  $('output').textContent = '';
+  try {
+    await withPort(async port => {
+      if (info?.method === 'esptool') {
+        const { loader, transport } = await espLoader(port, 115200);
+        try {
+          const chip = await loader.main();
+          log(`Chip: ${chip}`, 'ok');
+          await loader.flashId();
+          const size = await loader.detectFlashSize().catch(() => null);
+          if (size) log(`Flash size: ${size}`, 'ok');
+          await loader.after('hard_reset');
+        } finally {
+          await transport.disconnect().catch(() => {});
+        }
+      } else if (info?.method === 'stk500v1') {
+        const sig = await readAvrSignature(port, info);
+        log(`Signature: ${sig.match(/../g).join(' ')} → ${avrChipName(sig)}`, 'ok');
+      } else {
+        log('Chip info is available for ESP32/ESP8266 and Uno/Nano/Pro Mini boards.', 'warn');
+      }
+    });
+  } catch (e) {
+    log('Chip info failed: ' + e.message, 'err');
+  }
+}
+
+async function eraseFlash() {
+  if (boardInfo?.upload?.method !== 'esptool') return;
+  if (!confirm('Erase the whole flash of the ESP board? The current program and stored data are removed.')) return;
+  showTab('output');
+  $('output').textContent = '';
+  try {
+    await withPort(async port => {
+      const { loader, transport } = await espLoader(port, boardInfo.upload.speed);
+      try {
+        await loader.main();
+        log('Erasing flash (can take 10–30 s)…', 'info');
+        await loader.eraseFlash();
+        log('Flash erased ✔', 'ok');
+        await loader.after('hard_reset');
+      } finally {
+        await transport.disconnect().catch(() => {});
+      }
+    });
+  } catch (e) {
+    log('Erase failed: ' + e.message, 'err');
+  }
+}
+
+// ---------- Debugger & plotter ----------
+let plotter, dbg;
+
+function onBreak(file, line) {
+  $('pausedBanner').classList.remove('hidden');
+  $('pausedText').textContent = `Paused at ${file}:${line}`;
+  $('debugDot').className = 'dot paused';
+  setStatus(`Paused at ${file}:${line}`);
+  const path = resolveFile(file);
+  if (path && editor) {
+    openFile(path, line);
+    breakDecorations?.clear();
+    breakDecorations = editor.createDecorationsCollection([{
+      range: new monaco.Range(line, 1, line, 1),
+      options: { isWholeLine: true, className: 'dbg-line', glyphMarginClassName: 'dbg-glyph' },
+    }]);
+    // The banner just shrank the editor; scroll again once the new size is applied
+    setTimeout(() => { editor.layout(); editor.revealLineInCenter(line); }, 150);
+  }
+}
+
+function onResume() {
+  $('pausedBanner').classList.add('hidden');
+  $('debugDot').className = 'dot on';
+  breakDecorations?.clear();
+  setStatus('Running');
+}
+
+function insertDebugHeader() {
+  const root = sketchRoot();
+  if (!root) return alert('Open a sketch first.');
+  const path = joinRoot(root.dir, 'WebIDEDebug.h');
+  project().files[path] = DEBUG_HEADER;
+  models.get(path)?.setValue(DEBUG_HEADER);
+  const main = getModel(root.main);
+  if (!/#include\s+"WebIDEDebug\.h"/.test(main.getValue())) {
+    main.pushEditOperations([], [{ range: new monaco.Range(1, 1, 1, 1), text: '#include "WebIDEDebug.h"\n' }], () => null);
+  }
+  saveProjects();
+  renderTree();
+  setDebugBuild(true);
+  openFile(root.main);
+  log('Added WebIDEDebug.h and turned on Debug build. Use DBG_WATCH(x), DBG_BREAK() … in your code.', 'ok');
 }
 
 // ---------- Libraries ----------
-function addToLibrariesTxt(name) {
-  const root = sketchRoot();
-  const path = joinRoot(root?.dir || '', 'libraries.txt');
-  const p = project();
-  const lines = (p.files[path] || '# One Arduino Library Manager name per line (installed when building on GitHub Actions)\n').split('\n');
-  if (!lines.some(l => l.trim() === name)) lines.splice(lines.length - (lines.at(-1) === '' ? 1 : 0), 0, name);
-  p.files[path] = lines.join('\n').replace(/\n*$/, '\n');
-  models.get(path)?.setValue(p.files[path]);
+let libIndex = null;
+
+async function loadLibIndex() {
+  if (libIndex) return libIndex;
+  try {
+    const r = await fetch('libraries.json');
+    if (!r.ok) throw new Error(r.status);
+    libIndex = (await r.json()).map(([name, version, author, sentence, category, arch]) => ({ name, version, author, sentence, category, arch, key: name.toLowerCase() }));
+  } catch {
+    libIndex = [];
+  }
+  return libIndex;
+}
+
+const libsPath = () => joinRoot(sketchRoot()?.dir || '', 'libraries.txt');
+function sketchLibs() {
+  return (project().files[libsPath()] || '').split(/\r?\n/).map(s => s.trim()).filter(s => s && !s.startsWith('#'));
+}
+
+function writeSketchLibs(list) {
+  const path = libsPath();
+  const content = '# Libraries installed when this sketch is built: Library Manager names, git URLs or .zip links\n' + list.join('\n') + '\n';
+  project().files[path] = content;
+  models.get(path)?.setValue(content);
   saveProjects();
   renderTree();
-  log(`Added "${name}" to ${path}`, 'ok');
+  renderSketchLibs();
+}
+
+async function addLibrary(entry) {
+  if (!sketchLibs().includes(entry)) writeSketchLibs([...sketchLibs(), entry]);
+  log(`Added "${entry}" to ${libsPath()}`, 'ok');
+  if (serverOnline && /^[\w .@+-]+$/.test(entry)) {
+    const r = await (await api('/api/libs/install', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: entry }),
+    })).json().catch(e => ({ error: e.message }));
+    log(r.error ? `Server install failed: ${r.error}` : `Installed ${entry} on the compile server`, r.error ? 'warn' : 'ok');
+  }
+}
+
+function renderSketchLibs() {
+  const ul = $('libInstalled');
+  const libs = sketchLibs();
+  $('libCount').textContent = libs.length;
+  ul.innerHTML = libs.length ? '' : '<li class="empty-row">No libraries yet</li>';
+  for (const name of libs) {
+    const li = document.createElement('li');
+    li.innerHTML = '<b></b><button class="icon-btn sm" title="Remove"><svg><use href="#i-trash"/></svg></button>';
+    li.querySelector('b').textContent = name;
+    li.querySelector('button').onclick = () => writeSketchLibs(sketchLibs().filter(l => l !== name));
+    ul.appendChild(li);
+  }
 }
 
 async function searchLibs() {
-  const q = $('libQuery').value.trim();
+  const q = $('libQuery').value.trim().toLowerCase();
   const ul = $('libResults');
-  if (!q) return;
-  if (!serverOnline) {
-    // GitHub Actions builds install the libraries listed in the sketch's libraries.txt
-    ul.innerHTML = '<li><p>Library search needs a compile server. For GitHub Actions builds, add the exact Library Manager name to <code>libraries.txt</code> and it is installed during the build.</p><button>Add to libraries.txt</button></li>';
-    ul.querySelector('button').onclick = () => addToLibrariesTxt(q);
-    return;
+  if (!q) { ul.innerHTML = ''; return; }
+  let results = [];
+  const index = await loadLibIndex();
+  if (index.length) {
+    const words = q.split(/\s+/);
+    results = index
+      .map(l => {
+        const hay = `${l.key} ${l.sentence.toLowerCase()} ${l.author.toLowerCase()}`;
+        if (!words.every(w => hay.includes(w))) return null;
+        const score = (l.key === q ? 100 : 0) + (l.key.startsWith(q) ? 50 : 0) + (l.key.includes(q) ? 20 : 0);
+        return { l, score };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score || a.l.name.localeCompare(b.l.name))
+      .slice(0, 60)
+      .map(x => x.l);
+  } else if (serverOnline) {
+    results = await (await api('/api/libs/search?q=' + encodeURIComponent(q))).json().catch(() => []);
   }
-  ul.innerHTML = '<li>Searching…</li>';
-  try {
-    const libs = await (await api('/api/libs/search?q=' + encodeURIComponent(q))).json();
-    if (libs.error) throw new Error(libs.error);
-    ul.innerHTML = libs.length ? '' : '<li>No results</li>';
-    for (const l of libs) {
-      const li = document.createElement('li');
-      li.innerHTML = '<b></b><p></p><button>Install</button>';
-      li.querySelector('b').textContent = `${l.name} ${l.version || ''}`;
-      li.querySelector('p').textContent = `${l.sentence || ''} — ${l.author || ''}`;
-      li.querySelector('button').onclick = async e => {
-        e.target.disabled = true;
-        e.target.textContent = 'Installing…';
-        const r = await (await api('/api/libs/install', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: l.name }),
-        })).json();
-        e.target.textContent = r.error ? 'Failed' : 'Installed';
-        log(r.error || r.log, r.error ? 'err' : 'ok');
-        loadInstalledLibs();
-      };
-      ul.appendChild(li);
-    }
-  } catch (e) {
-    ul.innerHTML = '';
-    log('Library search failed: ' + e.message, 'err');
+  ul.innerHTML = results.length ? '' : '<li class="empty-row">No libraries found</li>';
+  const have = new Set(sketchLibs());
+  for (const l of results) {
+    const li = document.createElement('li');
+    li.innerHTML = '<b></b><button class="btn sm"></button><p></p><span class="meta"></span>';
+    li.querySelector('b').textContent = l.name;
+    li.querySelector('p').textContent = l.sentence || '';
+    li.querySelector('.meta').textContent = [l.version && 'v' + l.version, l.author, l.category].filter(Boolean).join(' · ');
+    const btn = li.querySelector('button');
+    btn.textContent = have.has(l.name) ? 'Added' : 'Add';
+    btn.disabled = have.has(l.name);
+    btn.onclick = async () => { btn.disabled = true; btn.textContent = 'Added'; await addLibrary(l.name); };
+    ul.appendChild(li);
   }
 }
 
-async function loadInstalledLibs() {
-  const ul = $('libInstalled');
-  try {
-    const libs = await (await api('/api/libs/installed')).json();
-    ul.innerHTML = '';
-    for (const l of libs) {
-      const li = document.createElement('li');
-      li.textContent = `${l.name} ${l.version}`;
-      ul.appendChild(li);
-    }
-  } catch {}
+// ---------- Examples ----------
+function renderExamples() {
+  const ul = $('exampleList');
+  for (const ex of EXAMPLES) {
+    const li = document.createElement('li');
+    li.innerHTML = '<b></b><button class="btn sm">Open</button><p></p>';
+    li.querySelector('b').textContent = ex.name;
+    li.querySelector('p').textContent = ex.desc;
+    li.querySelector('button').onclick = () => {
+      createProject(ex.name, ex.files);
+      if (ex.name === 'Debugger') setDebugBuild(true);
+      showView('files');
+    };
+    ul.appendChild(li);
+  }
 }
 
-// ---------- GitHub ----------
+// ---------- GitHub import ----------
 async function ghImport() {
   const status = $('ghStatus');
   const btn = $('btnGhImport');
   const token = $('ghToken').value.trim();
-  try { token ? sessionStorage.setItem('webide.ghToken', token) : sessionStorage.removeItem('webide.ghToken'); } catch {}
   status.className = 'status';
   btn.disabled = true;
   try {
@@ -930,9 +1287,8 @@ async function ghImport() {
     createProject(name, files);
     status.textContent = `Imported ${Object.keys(files).length} files from ${source}`;
     store.set('ghLast', $('ghUrl').value);
-    const root = sketchRoot();
-    if (!root) log('Imported project has no .ino file; add one or link to a sketch folder.', 'warn');
-    document.querySelector('.side-tabs [data-panel=files]').click();
+    if (!sketchRoot()) log('The imported project has no .ino file; add one or link to a sketch folder.', 'warn');
+    showView('files');
   } catch (e) {
     status.className = 'status err';
     status.textContent = e.message;
@@ -941,21 +1297,94 @@ async function ghImport() {
   }
 }
 
+// ---------- Layout ----------
+let activeTab = 'output';
+function showTab(name) {
+  activeTab = name;
+  document.querySelectorAll('.panel-tabs [data-tab]').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab-body').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name));
+  plotter.visible = name === 'plotter';
+  plotter.dirty = true;
+  if (name === 'serial' && mon.stale) scheduleMonitor();
+}
+
+function showView(name) {
+  const wb = document.querySelector('.workbench');
+  const btn = document.querySelector(`.activitybar [data-view="${name}"]`);
+  if (btn.classList.contains('active') && !wb.classList.contains('side-hidden') && name === store.get('view')) {
+    wb.classList.add('side-hidden');
+    return;
+  }
+  wb.classList.remove('side-hidden');
+  document.querySelectorAll('.activitybar [data-view]').forEach(b => b.classList.toggle('active', b === btn));
+  document.querySelectorAll('.sidebar .view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+  store.set('view', name);
+  if (name === 'libs') { renderSketchLibs(); loadLibIndex(); }
+  if (name === 'boards') renderBoardList();
+}
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  store.set('theme', theme);
+  $('btnTheme').querySelector('use').setAttribute('href', theme === 'light' ? '#i-moon' : '#i-sun');
+  if (window.monaco) monaco.editor.setTheme(theme === 'light' ? 'webide-light' : 'webide-dark');
+  if (plotter) plotter.dirty = true;
+}
+
+function setupResizers() {
+  const root = document.documentElement.style;
+  const side = store.get('sideW', 290), panel = store.get('panelH', 270);
+  root.setProperty('--side-w', side + 'px');
+  root.setProperty('--panel-h', panel + 'px');
+  const drag = (handle, onMove, onEnd) => {
+    handle.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      handle.setPointerCapture(e.pointerId);
+      handle.classList.add('dragging');
+      document.body.classList.add('resizing');
+      const move = ev => onMove(ev);
+      const up = () => {
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+        handle.classList.remove('dragging');
+        document.body.classList.remove('resizing');
+        onEnd();
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+    });
+  };
+  let w = side, h = panel;
+  drag($('sideResizer'), e => {
+    const left = $('sidebar').getBoundingClientRect().left;
+    w = Math.max(200, Math.min(640, e.clientX - left));
+    root.setProperty('--side-w', w + 'px');
+  }, () => store.set('sideW', w));
+  drag($('bottomResizer'), e => {
+    const main = document.querySelector('.main').getBoundingClientRect();
+    h = Math.max(80, Math.min(main.height - 120, main.bottom - e.clientY));
+    root.setProperty('--panel-h', h + 'px');
+    $('panel').classList.remove('max');
+  }, () => store.set('panelH', h));
+}
+
 // ---------- Wiring ----------
 function wireUi() {
-  document.querySelectorAll('.side-tabs button').forEach(b => (b.onclick = () => {
-    document.querySelectorAll('.side-tabs button').forEach(x => x.classList.toggle('active', x === b));
-    document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + b.dataset.panel));
-    if (b.dataset.panel === 'libs') loadInstalledLibs();
-  }));
-  document.querySelectorAll('.bottom-tabs > button').forEach(b => (b.onclick = () => showBottom(b.dataset.bpanel)));
+  document.querySelectorAll('.activitybar [data-view]').forEach(b => (b.onclick = () => showView(b.dataset.view)));
+  document.querySelectorAll('.panel-tabs [data-tab]').forEach(b => (b.onclick = () => showTab(b.dataset.tab)));
+  $('btnPanelMax').onclick = () => $('panel').classList.toggle('max');
 
   $('btnVerify').onclick = verify;
   $('btnUpload').onclick = upload;
+  $('btnDebugBuild').onclick = () => setDebugBuild(!debugBuild);
+  $('chkDebugBuild').onchange = e => setDebugBuild(e.target.checked);
   $('btnPort').onclick = selectPort;
   $('btnDownloadFw').onclick = downloadFirmware;
-  $('serverStatus').onclick = configureServer;
+  $('btnTheme').onclick = () => applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+  $('btnSettings').onclick = $('btnSettings2').onclick = $('serverStatus').onclick = configureServer;
   $('boardSelect').onchange = onBoardChange;
+  $('boardQuery').oninput = renderBoardList;
+  $('btnAddBoard').onclick = addBoardDialog;
 
   $('projectSelect').onchange = e => switchProject(e.target.value);
   $('btnProjectMenu').onclick = e => { e.stopPropagation(); $('projectMenu').classList.toggle('hidden'); };
@@ -964,7 +1393,7 @@ function wireUi() {
     const act = e.target.dataset.act;
     if (act === 'new') {
       const name = prompt('Project name:', 'MySketch')?.trim();
-      if (name) createProject(name, { [`${name.replace(/[^\w-]/g, '_')}.ino`]: 'void setup() {\n  \n}\n\nvoid loop() {\n  \n}\n' });
+      if (name) createProject(name, { [`${name.replace(/[^\w-]/g, '_')}.ino`]: 'void setup() {\n  Serial.begin(115200);\n}\n\nvoid loop() {\n  \n}\n' });
     } else if (act === 'rename') {
       const name = prompt('New name:', project().name)?.trim();
       if (name) { project().name = name; saveProjects(); renderProjectSelect(); }
@@ -976,29 +1405,72 @@ function wireUi() {
       switchProject(Object.keys(projects)[0]);
     }
   };
-
   $('btnNewFile').onclick = newFile;
   $('fileInput').onchange = e => { addLocalFiles(e.target.files); e.target.value = ''; };
   $('folderInput').onchange = e => { addLocalFiles(e.target.files); e.target.value = ''; };
 
   $('btnGhImport').onclick = ghImport;
   $('ghUrl').value = store.get('ghLast', '');
-  try { $('ghToken').value = sessionStorage.getItem('webide.ghToken') || ''; } catch {}
   $('ghUrl').onkeydown = e => e.key === 'Enter' && ghImport();
 
-  $('btnLibSearch').onclick = searchLibs;
-  $('libQuery').onkeydown = e => e.key === 'Enter' && searchLibs();
+  let libTimer;
+  $('libQuery').oninput = () => { clearTimeout(libTimer); libTimer = setTimeout(searchLibs, 200); };
+  $('btnLibUrl').onclick = () => {
+    const url = $('libUrl').value.trim();
+    if (!/^https:\/\/\S+$/.test(url)) return alert('Enter an https:// git URL or .zip link');
+    addLibrary(url);
+    $('libUrl').value = '';
+  };
 
+  // Serial monitor
   $('btnSerial').onclick = () => (serial.open ? closeMonitor() : openMonitor());
   $('baudSelect').value = store.get('baud', '115200');
   $('baudSelect').onchange = async () => {
     store.set('baud', $('baudSelect').value);
     if (serial.open) { await closeMonitor(); await openMonitor(); }
   };
-  $('btnSerialClear').onclick = () => { $('serialOut').textContent = ''; serial.lineStart = true; };
+  $('btnSerialClear').onclick = () => { mon.lines = []; mon.partial = ''; mon.raw = []; mon.rawLen = 0; scheduleMonitor(); };
+  $('btnSerialSave').onclick = () => {
+    const text = mon.lines.map(l => `${new Date(l.t).toISOString()}  ${l.s}`).join('\n');
+    downloadBlob(new Blob([text], { type: 'text/plain' }), `serial-${new Date().toISOString().slice(0, 19).replace(/:/g, '')}.txt`);
+  };
   $('btnSerialSend').onclick = sendSerial;
-  $('serialInput').onkeydown = e => e.key === 'Enter' && sendSerial();
-  $('btnResetBoard').onclick = resetBoard;
+  $('serialInput').onkeydown = e => {
+    if (e.key === 'Enter') sendSerial();
+    else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      mon.histIdx = Math.max(-1, Math.min(mon.history.length - 1, mon.histIdx + (e.key === 'ArrowUp' ? 1 : -1)));
+      $('serialInput').value = mon.histIdx < 0 ? '' : mon.history[mon.histIdx];
+    }
+  };
+  for (const id of ['serialFilter', 'chkTimestamp', 'chkHideDbg']) $(id).addEventListener('input', scheduleMonitor);
+  $('viewText').onclick = () => { mon.hex = false; $('viewText').classList.add('active'); $('viewHex').classList.remove('active'); scheduleMonitor(); };
+  $('viewHex').onclick = () => { mon.hex = true; $('viewHex').classList.add('active'); $('viewText').classList.remove('active'); scheduleMonitor(); };
+  const signals = async () => {
+    if (serial.open) await serial.port.setSignals({ dataTerminalReady: $('chkDtr').checked, requestToSend: $('chkRts').checked }).catch(() => {});
+  };
+  $('chkDtr').onchange = signals;
+  $('chkRts').onchange = signals;
+
+  // Plotter
+  $('btnPlotClear').onclick = () => plotter.clear();
+  $('btnPlotPause').onclick = () => {
+    plotter.paused = !plotter.paused;
+    $('btnPlotPause').querySelector('use').setAttribute('href', plotter.paused ? '#i-play' : '#i-pause');
+    $('btnPlotPause').title = plotter.paused ? 'Resume' : 'Pause';
+  };
+  $('plotPoints').onchange = e => { plotter.maxPoints = +e.target.value; plotter.dirty = true; };
+
+  // Debug
+  $('btnDbgClear').onclick = () => dbg.reset();
+  $('btnBannerContinue').onclick = () => dbg.resume('c');
+  $('btnBannerRun').onclick = () => dbg.resume('r');
+  $('btnInsertDebug').onclick = insertDebugHeader;
+  $('btnOpenDebugExample').onclick = () => { const ex = EXAMPLES.find(e => e.name === 'Debugger'); createProject(ex.name, ex.files); setDebugBuild(true); showView('files'); };
+  $('btnChipInfo').onclick = chipInfo;
+  $('btnResetBoard').onclick = () => resetBoard().catch(e => log('Reset failed: ' + e.message, 'err'));
+  $('btnEraseFlash').onclick = eraseFlash;
+  $('btnOpenMonitor').onclick = () => { showTab('serial'); if (!serial.open) openMonitor(); };
 
   window.addEventListener('keydown', e => {
     if (!(e.ctrlKey || e.metaKey)) return;
@@ -1006,39 +1478,70 @@ function wireUi() {
     if (k === 'r') { e.preventDefault(); verify(); }
     else if (k === 'u') { e.preventDefault(); upload(); }
     else if (k === 's') { e.preventDefault(); saveProjects(); setStatus('Saved'); }
+    else if (k === 'b') { e.preventDefault(); document.querySelector('.workbench').classList.toggle('side-hidden'); }
+    else if (k === 'j') { e.preventDefault(); $('panel').classList.toggle('hidden'); }
   });
 
   if ('serial' in navigator) {
-    // Prefer USB ports; built-in COM1 and Bluetooth ports are usually not the board
+    // Prefer USB ports; built-in COM ports and Bluetooth ports are usually not the board
     navigator.serial.getPorts().then(ports => {
       const usb = ports.find(p => p.getInfo().usbVendorId);
       if (usb && !serial.port) setPort(usb);
     });
     navigator.serial.addEventListener('disconnect', e => {
-      if (e.target === serial.port) {
-        serial.open = false;
-        $('serialDot').classList.remove('on');
-        $('btnSerial').textContent = 'Connect';
-        setPort(null);
-        writeSerial('\n[Board disconnected]\n');
-      }
+      if (e.target !== serial.port) return;
+      serial.open = false;
+      $('serialDot').classList.remove('on');
+      $('btnSerial').lastElementChild.textContent = 'Connect';
+      setPort(null);
+      monitorSystem('Board disconnected');
     });
   } else {
-    log('Web Serial is not supported in this browser — upload and serial monitor need Chrome or Edge.', 'warn');
+    log('Web Serial is not supported in this browser: uploading and the serial monitor need Chrome or Edge on desktop.', 'warn');
   }
 }
 
 // ---------- Boot ----------
+plotter = new Plotter($('plotCanvas'), $('plotLegend'));
+dbg = new Debugger(
+  { state: $('dbgState'), continueBtn: $('btnDbgContinue'), runBtn: $('btnDbgRun'), watches: $('dbgWatches'), events: $('dbgEvents') },
+  {
+    send: ch => serialWrite(ch),
+    onBreak, onResume,
+    plot: (name, value) => plotter.push(name, value),
+    symbols: () => symbols,
+    openLocation,
+  },
+);
+setPort(null);
+setDebugBuild(debugBuild);
+setupResizers();
+renderExamples();
+
 require.config({ paths: { vs: new URL('vendor/monaco/vs', document.baseURI).href } });
 require(['vs/editor/editor.main'], () => {
+  monaco.editor.defineTheme('webide-dark', {
+    base: 'vs-dark', inherit: true, rules: [],
+    colors: { 'editor.background': '#0f1115', 'editorGutter.background': '#0f1115', 'editor.lineHighlightBackground': '#1b1f2a' },
+  });
+  monaco.editor.defineTheme('webide-light', { base: 'vs', inherit: true, rules: [], colors: { 'editor.background': '#ffffff' } });
+  const theme = store.get('theme', matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
   editor = monaco.editor.create($('editor'), {
-    theme: 'vs-dark',
+    theme: theme === 'light' ? 'webide-light' : 'webide-dark',
     automaticLayout: true,
     fontSize: 14,
-    minimap: { enabled: false },
+    fontFamily: '"JetBrains Mono", "Cascadia Mono", Consolas, monospace',
+    fontLigatures: true,
+    minimap: { enabled: true, scale: 1, renderCharacters: false },
+    glyphMargin: true,
     tabSize: 2,
     scrollBeyondLastLine: false,
+    smoothScrolling: true,
+    cursorBlinking: 'smooth',
+    bracketPairColorization: { enabled: true },
+    padding: { top: 8 },
   });
+  applyTheme(theme);
   editor.onDidChangeCursorPosition(e => {
     $('cursorPos').textContent = `Ln ${e.position.lineNumber}, Col ${e.position.column}`;
   });
@@ -1049,5 +1552,10 @@ require(['vs/editor/editor.main'], () => {
   renderProjectSelect();
   renderTree();
   openFile(project().active);
+  renderSketchLibs();
+  const view = store.get('view', 'files');
+  store.set('view', null);
+  showView(view);
+  showTab('output');
   checkServer().then(() => loadBoards());
 });

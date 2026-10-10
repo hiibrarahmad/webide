@@ -214,6 +214,21 @@ async function flashV2(io, port, image, pageSize, log, progress) {
   await v2.cmd([0x11, 0x01, 0x01]);
 }
 
+// Reads the chip signature through the bootloader (STK500v1 only); does not change the flash
+export async function readAvrSignature(port, { speed }) {
+  await port.open({ baudRate: speed });
+  const io = new PortIO(port);
+  try {
+    await syncV1(io, port);
+    const sig = await v1cmd(io, [0x75], 3);
+    await v1cmd(io, [0x51]);
+    return sig.map(b => b.toString(16).padStart(2, '0')).join('');
+  } finally {
+    await io.close();
+    await port.close();
+  }
+}
+
 export async function flashAvr(port, hexText, { method, speed, pageSize }, log, progress) {
   const image = parseIntelHex(hexText);
   log(`Firmware: ${image.length} bytes, ${method} @ ${speed} baud`);

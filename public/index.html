@@ -4,34 +4,99 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Web IDE</title>
+  <meta name="description" content="Online Arduino and ESP32 IDE: write code, compile in the cloud, flash from the browser, serial monitor, plotter and debugger.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
   <link rel="stylesheet" href="style.css">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%2300979d'/><path d='M4 5l3 3-3 3M8 11h4' stroke='white' stroke-width='1.6' fill='none'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3.5' fill='%2314b8a6'/><path d='M4 5l3 3-3 3M8.5 11h3.5' stroke='white' stroke-width='1.7' fill='none' stroke-linecap='round'/></svg>">
+  <script>
+    // Apply the saved theme before first paint
+    try { const t = localStorage.getItem('webide.theme'); if (t) document.documentElement.dataset.theme = JSON.parse(t); } catch {}
+  </script>
 </head>
 <body>
-  <header class="toolbar">
-    <div class="brand">⌁ Web IDE</div>
-    <button id="btnVerify" class="tool" title="Compile (Ctrl+R)">✓ <span>Verify</span></button>
-    <button id="btnUpload" class="tool primary" title="Compile &amp; upload (Ctrl+U)">→ <span>Upload</span></button>
-    <div class="sep"></div>
-    <select id="boardSelect" title="Board"></select>
-    <span id="boardOptions"></span>
-    <button id="btnPort" class="tool" title="Select the serial port of your board">🔌 <span id="portLabel">Select port</span></button>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+      <symbol id="i-bug" viewBox="0 0 24 24"><path d="M8.5 7.5a3.5 3.5 0 0 1 7 0"/><rect x="7" y="8" width="10" height="12" rx="5"/><path d="M12 12v8M3 13h4M17 13h4M4 7.5l3 2M20 7.5l-3 2M4 20l3-2.5M20 20l-3-2.5"/></symbol>
+      <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx=".5"/><path d="M9 2.5v3M15 2.5v3M9 18.5v3M15 18.5v3M2.5 9h3M2.5 15h3M18.5 9h3M18.5 15h3"/></symbol>
+      <symbol id="i-plug" viewBox="0 0 24 24"><path d="M9 2.5v5M15 2.5v5M6 7.5h12v3.5a6 6 0 0 1-12 0zM12 17v4.5"/></symbol>
+      <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.5v11M7 10l5 5 5-5M5 20.5h14"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2.5 12h2M19.5 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.5 13.2A8.5 8.5 0 1 1 10.8 3.5a6.6 6.6 0 0 0 9.7 9.7z"/></symbol>
+      <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+      <symbol id="i-files" viewBox="0 0 24 24"><path d="M14 2.5H6.5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V8z"/><path d="M14 2.5V8h5.5"/></symbol>
+      <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V2.5H6.5A2.5 2.5 0 0 0 4 5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/></symbol>
+      <symbol id="i-library" viewBox="0 0 24 24"><rect x="3" y="4" width="4" height="16" rx="1"/><rect x="9" y="4" width="4" height="16" rx="1"/><path d="m15 5.5 3.9-1 3.6 14.6-3.9 1z"/></symbol>
+      <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4.5 1.4-4.5-2.3-6.3-2.8m12.6 5.3v-3.6a3.1 3.1 0 0 0-.9-2.4c2.9-.3 5.9-1.4 5.9-6.4a5 5 0 0 0-1.4-3.4 4.6 4.6 0 0 0-.1-3.4s-1.1-.3-3.6 1.4a12.4 12.4 0 0 0-6.5 0C6.3 1.9 5.2 2.2 5.2 2.2a4.6 4.6 0 0 0-.1 3.4 5 5 0 0 0-1.4 3.4c0 5 3 6.1 5.9 6.4a3.1 3.1 0 0 0-.9 2.4v3.7"/></symbol>
+      <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5l12 7.5-12 7.5z"/></symbol>
+      <symbol id="i-run" viewBox="0 0 24 24"><path d="M4 5.5l7.5 6.5L4 18.5zM12.5 5.5L20 12l-7.5 6.5z"/></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3.5 6.5h17M9 6.5V4h6v2.5M6 6.5l1 14h10l1-14"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><path d="M7 4.5h3v15H7zM14 4.5h3v15h-3z"/></symbol>
+      <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3.5h11l3.5 3.5v13.5H5z"/><path d="M8.5 3.5V8h6.5M8.5 20.5v-6h7v6"/></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.8-6.3L3.5 8.2"/><path d="M3.5 3.5v4.7h4.7"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20.5 20.5-4.8-4.8"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+      <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.2"/></symbol>
+      <symbol id="i-eraser" viewBox="0 0 24 24"><path d="M7.5 20.5 3 16 13.5 5.5l7 7-8 8z"/><path d="M8.5 11l7 7M13 20.5h8"/></symbol>
+      <symbol id="i-max" viewBox="0 0 24 24"><path d="M8.5 3.5h-5v5M15.5 3.5h5v5M8.5 20.5h-5v-5M15.5 20.5h5v-5"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2.5h7a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="i-chart" viewBox="0 0 24 24"><path d="M3.5 20.5h17M5.5 16l4.5-5 4 3.5 6-7.5"/></symbol>
+      <symbol id="i-terminal" viewBox="0 0 24 24"><path d="m4.5 16.5 5-4.5-5-4.5M12 18.5h7.5"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="titlebar">
+    <div class="brand"><svg class="logo" viewBox="0 0 24 24"><rect x="1.5" y="1.5" width="21" height="21" rx="5.5"/><path d="M7 8.5l3.5 3.5L7 15.5M12.5 15.5h4.5"/></svg><span>Web IDE</span></div>
+    <div class="actions">
+      <button id="btnVerify" class="act" title="Verify / compile (Ctrl+R)"><svg><use href="#i-check"/></svg></button>
+      <button id="btnUpload" class="act primary" title="Upload to the board (Ctrl+U)"><svg><use href="#i-upload"/></svg></button>
+      <button id="btnDebugBuild" class="act toggle" title="Debug build: compile the WebIDEDebug.h helpers in" aria-pressed="false"><svg><use href="#i-bug"/></svg></button>
+    </div>
+    <div class="chip-group">
+      <label class="chip board" title="Board">
+        <svg><use href="#i-cpu"/></svg>
+        <select id="boardSelect"></select>
+        <svg class="caret"><use href="#i-chevron"/></svg>
+      </label>
+      <span id="boardOptions" class="opts"></span>
+      <button id="btnPort" class="chip" title="Select the serial port of your board"><svg><use href="#i-plug"/></svg><span id="portLabel">Select port</span></button>
+    </div>
     <div class="spacer"></div>
-    <button id="btnDownloadFw" class="tool" title="Download last compiled firmware" disabled>⬇ Firmware</button>
+    <div id="progress" class="progress hidden"><div></div></div>
+    <button id="btnDownloadFw" class="icon-btn" title="Download the last compiled firmware" disabled><svg><use href="#i-download"/></svg></button>
+    <button id="btnTheme" class="icon-btn" title="Switch light / dark theme"><svg><use href="#i-moon"/></svg></button>
+    <button id="btnSettings" class="icon-btn" title="Compile settings (GitHub Actions token / server)"><svg><use href="#i-gear"/></svg></button>
   </header>
 
-  <main class="layout">
-    <aside class="sidebar">
-      <nav class="side-tabs">
-        <button data-panel="files" class="active">Files</button>
-        <button data-panel="github">GitHub</button>
-        <button data-panel="libs">Libraries</button>
-      </nav>
+  <div class="workbench">
+    <nav class="activitybar" aria-label="Views">
+      <button data-view="files" class="active" title="Files"><svg><use href="#i-files"/></svg></button>
+      <button data-view="examples" title="Examples"><svg><use href="#i-book"/></svg></button>
+      <button data-view="boards" title="Boards"><svg><use href="#i-cpu"/></svg></button>
+      <button data-view="libs" title="Libraries"><svg><use href="#i-library"/></svg></button>
+      <button data-view="debug" title="Debug &amp; board tools"><svg><use href="#i-bug"/></svg></button>
+      <button data-view="github" title="Import from GitHub"><svg><use href="#i-github"/></svg></button>
+      <div class="spacer"></div>
+      <button id="btnSettings2" title="Compile settings"><svg><use href="#i-gear"/></svg></button>
+    </nav>
 
-      <section id="panel-files" class="panel active">
+    <aside class="sidebar" id="sidebar">
+      <section class="view active" id="view-files">
+        <header class="view-head"><h2>Files</h2>
+          <div class="head-actions">
+            <button id="btnNewFile" class="icon-btn sm" title="New file"><svg><use href="#i-plus"/></svg></button>
+            <label class="icon-btn sm" title="Upload files"><svg><use href="#i-upload"/></svg><input id="fileInput" type="file" multiple hidden></label>
+            <label class="icon-btn sm" title="Upload a folder"><svg><use href="#i-folder"/></svg><input id="folderInput" type="file" webkitdirectory hidden></label>
+          </div>
+        </header>
         <div class="row">
           <select id="projectSelect" title="Project"></select>
-          <button id="btnProjectMenu" class="icon" title="Project actions">⋯</button>
+          <button id="btnProjectMenu" class="icon-btn sm" title="Project actions">⋯</button>
         </div>
         <div id="projectMenu" class="menu hidden">
           <button data-act="new">New project</button>
@@ -39,86 +104,195 @@
           <button data-act="zip">Download as .zip</button>
           <button data-act="delete" class="danger">Delete project</button>
         </div>
-        <div class="row actions">
-          <button id="btnNewFile" title="New file">+ File</button>
-          <label class="btn" title="Upload files from your computer">⇪ Upload<input id="fileInput" type="file" multiple hidden></label>
-          <label class="btn" title="Upload a folder">⇪ Folder<input id="folderInput" type="file" webkitdirectory hidden></label>
-        </div>
         <ul id="fileTree" class="tree"></ul>
-        <p class="hint">The sketch compiled is the folder containing the open <code>.ino</code> file.</p>
+        <p class="hint">The sketch that gets compiled is the folder of the open <code>.ino</code> file (marked ●).</p>
       </section>
 
-      <section id="panel-github" class="panel">
+      <section class="view" id="view-examples">
+        <header class="view-head"><h2>Examples</h2></header>
+        <ul id="exampleList" class="cards"></ul>
+      </section>
+
+      <section class="view" id="view-boards">
+        <header class="view-head"><h2>Boards</h2>
+          <div class="head-actions"><button id="btnAddBoard" class="icon-btn sm" title="Add a board"><svg><use href="#i-plus"/></svg></button></div>
+        </header>
+        <div class="search"><svg><use href="#i-search"/></svg><input id="boardQuery" placeholder="Search boards…"></div>
+        <ul id="boardList" class="cards compact"></ul>
+        <p class="hint">Missing a board? Use <b>+</b> to add any Arduino-compatible board by its FQBN, with its Boards Manager URL for third-party cores.</p>
+      </section>
+
+      <section class="view" id="view-libs">
+        <header class="view-head"><h2>Libraries</h2></header>
+        <div class="search"><svg><use href="#i-search"/></svg><input id="libQuery" placeholder="Search 10,000+ Arduino libraries…"></div>
+        <ul id="libResults" class="cards"></ul>
+        <details class="sub" open>
+          <summary>In this sketch <span id="libCount" class="badge"></span></summary>
+          <ul id="libInstalled" class="cards compact"></ul>
+          <div class="row"><input id="libUrl" placeholder="GitHub URL or .zip link"><button id="btnLibUrl" class="btn">Add</button></div>
+          <p class="hint">Libraries listed in <code>libraries.txt</code> are installed when the sketch is built.</p>
+        </details>
+      </section>
+
+      <section class="view" id="view-debug">
+        <header class="view-head"><h2>Debug</h2></header>
+        <div class="card">
+          <label class="switch"><input type="checkbox" id="chkDebugBuild"><span></span> Debug build</label>
+          <p class="hint">Compiles the <code>DBG_…</code> helpers in. Off = they compile to nothing.</p>
+          <button id="btnInsertDebug" class="btn wide">Add WebIDEDebug.h to sketch</button>
+          <button id="btnOpenDebugExample" class="btn wide ghost">Open the debugger example</button>
+        </div>
+        <h3>Board tools</h3>
+        <div class="tool-grid">
+          <button id="btnChipInfo" class="btn"><svg><use href="#i-info"/></svg>Chip info</button>
+          <button id="btnResetBoard" class="btn"><svg><use href="#i-reset"/></svg>Reset board</button>
+          <button id="btnEraseFlash" class="btn"><svg><use href="#i-eraser"/></svg>Erase flash</button>
+          <button id="btnOpenMonitor" class="btn"><svg><use href="#i-terminal"/></svg>Monitor</button>
+        </div>
+        <h3>Cheat sheet</h3>
+        <dl class="cheats">
+          <dt>DBG_WATCH(x)</dt><dd>live value in the Watch table + plot</dd>
+          <dt>DBG_BREAK()</dt><dd>pause until Continue</dd>
+          <dt>DBG_BREAK_IF(c)</dt><dd>pause when c is true</dd>
+          <dt>DBG_ASSERT(c)</dt><dd>report + pause when c is false</dd>
+          <dt>DBG_LOG("…")</dt><dd>message in the Debug log</dd>
+          <dt>DBG_TRACE()</dt><dd>record that this function ran</dd>
+          <dt>DBG_MEMORY()</dt><dd>watch free RAM / heap</dd>
+        </dl>
+        <p class="hint">ESP32 crashes ("Guru Meditation Error") are decoded automatically in the Debug tab after you compile in this session.</p>
+      </section>
+
+      <section class="view" id="view-github">
+        <header class="view-head"><h2>Import from GitHub</h2></header>
         <label class="field">Repository URL
           <input id="ghUrl" placeholder="https://github.com/user/repo/tree/main/sketch">
         </label>
-        <label class="field">Token <small>(optional, for private repos / rate limits)</small>
-          <input id="ghToken" type="password" placeholder="ghp_…">
+        <label class="field">Token <small>(optional, private repos)</small>
+          <input id="ghToken" type="password" placeholder="github_pat_…" autocomplete="off">
         </label>
-        <button id="btnGhImport" class="wide">Import into new project</button>
+        <button id="btnGhImport" class="btn primary wide">Import into new project</button>
         <div id="ghStatus" class="status"></div>
-        <p class="hint">Accepts <code>user/repo</code>, a repo URL, or a link to a folder or branch. Source and text files are imported.</p>
-      </section>
-
-      <section id="panel-libs" class="panel">
-        <div class="row">
-          <input id="libQuery" placeholder="Search libraries…">
-          <button id="btnLibSearch">Search</button>
-        </div>
-        <ul id="libResults" class="libs"></ul>
-        <details>
-          <summary>Installed</summary>
-          <ul id="libInstalled" class="libs small"></ul>
-        </details>
+        <p class="hint">Accepts <code>user/repo</code>, a repo URL, or a link to a folder or branch.</p>
       </section>
     </aside>
+    <div class="resizer col" id="sideResizer" title="Drag to resize"></div>
 
-    <section class="editor-area">
-      <div id="editorTabs" class="editor-tabs"></div>
-      <div id="editor"></div>
-      <div id="emptyEditor" class="empty hidden">No file open</div>
-    </section>
-
-    <section class="bottom">
-      <nav class="bottom-tabs">
-        <button data-bpanel="output" class="active">Output</button>
-        <button data-bpanel="serial">Serial Monitor <span id="serialDot" class="dot"></span></button>
-        <div class="spacer"></div>
-        <div id="progress" class="progress hidden"><div></div></div>
-      </nav>
-      <div id="bpanel-output" class="bpanel active"><pre id="output"></pre></div>
-      <div id="bpanel-serial" class="bpanel">
-        <div class="serial-bar">
-          <button id="btnSerial">Connect</button>
-          <select id="baudSelect">
-            <option>300</option><option>1200</option><option>2400</option><option>4800</option>
-            <option>9600</option><option>19200</option><option>38400</option><option>57600</option>
-            <option selected>115200</option><option>230400</option><option>460800</option><option>921600</option>
-          </select>
-          <label><input type="checkbox" id="chkAutoscroll" checked> Autoscroll</label>
-          <label><input type="checkbox" id="chkTimestamp"> Timestamp</label>
-          <button id="btnResetBoard" title="Toggle DTR/RTS to reset the board">Reset board</button>
-          <button id="btnSerialClear">Clear</button>
+    <main class="main">
+      <div class="editor-wrap">
+        <div id="editorTabs" class="editor-tabs"></div>
+        <div id="pausedBanner" class="paused-banner hidden">
+          <svg><use href="#i-pause"/></svg><span id="pausedText">Paused</span>
+          <button id="btnBannerContinue" class="btn sm"><svg><use href="#i-play"/></svg>Continue</button>
+          <button id="btnBannerRun" class="btn sm ghost"><svg><use href="#i-run"/></svg>Run</button>
         </div>
-        <pre id="serialOut"></pre>
-        <div class="serial-input">
-          <input id="serialInput" placeholder="Message (Enter to send)">
-          <select id="lineEnding">
-            <option value="">No line ending</option>
-            <option value="\n" selected>New line</option>
-            <option value="\r">Carriage return</option>
-            <option value="\r\n">Both NL &amp; CR</option>
-          </select>
-          <button id="btnSerialSend">Send</button>
-        </div>
+        <div id="editor"></div>
+        <div id="emptyEditor" class="empty hidden">No file open</div>
       </div>
-    </section>
-  </main>
+      <div class="resizer row" id="bottomResizer" title="Drag to resize"></div>
+      <section class="panel" id="panel">
+        <nav class="panel-tabs">
+          <button data-tab="output" class="active">Output</button>
+          <button data-tab="problems">Problems <span id="problemCount" class="badge hidden"></span></button>
+          <button data-tab="serial">Serial Monitor <span id="serialDot" class="dot"></span></button>
+          <button data-tab="plotter">Plotter</button>
+          <button data-tab="debug">Debug <span id="debugDot" class="dot"></span></button>
+          <div class="spacer"></div>
+          <button id="btnPanelMax" class="icon-btn sm" title="Maximize panel"><svg><use href="#i-max"/></svg></button>
+        </nav>
+
+        <div class="tab-body active" id="tab-output">
+          <div id="buildSummary" class="build-summary hidden"></div>
+          <pre id="output" class="log"></pre>
+        </div>
+
+        <div class="tab-body" id="tab-problems">
+          <ul id="problemList" class="problems"><li class="empty-row">No problems. Compile to check your code.</li></ul>
+        </div>
+
+        <div class="tab-body" id="tab-serial">
+          <div class="toolbar">
+            <button id="btnSerial" class="btn primary sm"><svg><use href="#i-plug"/></svg><span>Connect</span></button>
+            <select id="baudSelect" title="Baud rate">
+              <option>300</option><option>1200</option><option>2400</option><option>4800</option>
+              <option>9600</option><option>19200</option><option>38400</option><option>57600</option>
+              <option selected>115200</option><option>230400</option><option>460800</option><option>921600</option>
+            </select>
+            <div class="seg" role="group" title="View">
+              <button id="viewText" class="active">Text</button><button id="viewHex">Hex</button>
+            </div>
+            <div class="search sm"><svg><use href="#i-search"/></svg><input id="serialFilter" placeholder="Filter"></div>
+            <label class="check"><input type="checkbox" id="chkTimestamp"> Time</label>
+            <label class="check"><input type="checkbox" id="chkAutoscroll" checked> Autoscroll</label>
+            <label class="check" title="Hide @dbg lines (they go to the Debug tab)"><input type="checkbox" id="chkHideDbg" checked> Hide debug</label>
+            <label class="check" title="Data Terminal Ready line"><input type="checkbox" id="chkDtr"> DTR</label>
+            <label class="check" title="Request To Send line"><input type="checkbox" id="chkRts"> RTS</label>
+            <div class="spacer"></div>
+            <button id="btnSerialSave" class="icon-btn sm" title="Save log"><svg><use href="#i-save"/></svg></button>
+            <button id="btnSerialClear" class="icon-btn sm" title="Clear"><svg><use href="#i-trash"/></svg></button>
+          </div>
+          <pre id="serialOut" class="log"></pre>
+          <div class="serial-input">
+            <input id="serialInput" placeholder="Message to send (Enter; ↑/↓ for history)">
+            <select id="lineEnding" title="Line ending">
+              <option value="">No line ending</option>
+              <option value="\n" selected>New line</option>
+              <option value="\r">Carriage return</option>
+              <option value="\r\n">Both NL &amp; CR</option>
+            </select>
+            <button id="btnSerialSend" class="btn sm">Send</button>
+          </div>
+        </div>
+
+        <div class="tab-body" id="tab-plotter">
+          <div class="toolbar">
+            <div id="plotLegend" class="legend"></div>
+            <div class="spacer"></div>
+            <label class="check">Points <select id="plotPoints"><option>100</option><option>200</option><option selected>400</option><option>1000</option></select></label>
+            <button id="btnPlotPause" class="icon-btn sm" title="Pause"><svg><use href="#i-pause"/></svg></button>
+            <button id="btnPlotClear" class="icon-btn sm" title="Clear"><svg><use href="#i-trash"/></svg></button>
+          </div>
+          <canvas id="plotCanvas"></canvas>
+        </div>
+
+        <div class="tab-body" id="tab-debug">
+          <div class="toolbar">
+            <span id="dbgState" class="pill">Running</span>
+            <button id="btnDbgContinue" class="btn sm" disabled><svg><use href="#i-play"/></svg>Continue</button>
+            <button id="btnDbgRun" class="btn sm ghost" disabled title="Skip further breakpoints until the board resets"><svg><use href="#i-run"/></svg>Run</button>
+            <div class="spacer"></div>
+            <span class="hint">Needs the Serial Monitor connected</span>
+            <button id="btnDbgClear" class="icon-btn sm" title="Clear"><svg><use href="#i-trash"/></svg></button>
+          </div>
+          <div class="dbg-grid">
+            <section>
+              <h4>Watch</h4>
+              <table class="watch"><thead><tr><th>Name</th><th>Value</th><th>Previous</th><th>Updates</th><th>Time</th></tr></thead><tbody id="dbgWatches"></tbody></table>
+            </section>
+            <section>
+              <h4>Events</h4>
+              <ul id="dbgEvents" class="events"></ul>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <button id="serverStatus" class="sb-item" title="Compile settings">● Compiling not set up</button>
+    <span id="sbBoard" class="sb-item"></span>
+    <span id="sbPort" class="sb-item"></span>
+    <span id="sbDebug" class="sb-item hidden">Debug build</span>
+    <div class="spacer"></div>
+    <span id="sbMemory" class="sb-item"></span>
+    <span id="status" class="sb-item">Ready</span>
+    <span id="cursorPos" class="sb-item"></span>
+  </footer>
 
   <dialog id="backendDialog">
     <form method="dialog" class="dlg">
-      <h3>Set up compiling</h3>
-      <p class="hint">Code is compiled either for free on <b>GitHub Actions</b> (about 1–3 minutes per build), or on a compile server you host (seconds).</p>
+      <h3>Compile settings</h3>
+      <p class="hint">Code is compiled for free on <b>GitHub Actions</b> (about 15 s – 2 min per build), or on a compile server you host (seconds).</p>
       <fieldset>
         <legend>GitHub Actions (free)</legend>
         <label class="field">Repository (your copy of this IDE)
@@ -140,17 +314,39 @@
         </label>
       </fieldset>
       <div class="dlg-actions">
-        <button value="cancel" formnovalidate>Cancel</button>
-        <button value="save" class="tool primary">Save</button>
+        <button value="cancel" class="btn" formnovalidate>Cancel</button>
+        <button value="save" class="btn primary">Save</button>
       </div>
     </form>
   </dialog>
 
-  <footer class="statusbar">
-    <span id="status">Ready</span>
-    <span id="cursorPos"></span>
-    <button id="serverStatus" title="Compile server (click to change)">● Compile server</button>
-  </footer>
+  <dialog id="boardDialog">
+    <form method="dialog" class="dlg">
+      <h3>Add a board</h3>
+      <label class="field">Name
+        <input id="nbName" placeholder="My ESP32 board" required>
+      </label>
+      <label class="field">FQBN <small>(vendor:architecture:board, as in Arduino IDE)</small>
+        <input id="nbFqbn" placeholder="esp32:esp32:lolin32" required pattern="[\w.\-]+:[\w.\-]+:[\w.\-]+">
+      </label>
+      <label class="field">Boards Manager URL <small>(only for third-party cores)</small>
+        <input id="nbUrl" placeholder="https://…/package_xyz_index.json" pattern="https://.+\.json">
+      </label>
+      <div class="row">
+        <label class="field grow">Upload method
+          <select id="nbMethod"></select>
+        </label>
+        <label class="field">Baud
+          <input id="nbSpeed" type="number" min="1200" step="1" placeholder="auto">
+        </label>
+      </div>
+      <p class="hint">Find FQBNs with <code>arduino-cli board listall</code> or in the core's <code>boards.txt</code>. Custom boards compile on GitHub Actions; the core is installed and cached on first use.</p>
+      <div class="dlg-actions">
+        <button value="cancel" class="btn" formnovalidate>Cancel</button>
+        <button value="save" class="btn primary">Add board</button>
+      </div>
+    </form>
+  </dialog>
 
   <script src="config.js"></script>
   <script src="vendor/jszip.min.js"></script>

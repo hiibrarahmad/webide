@@ -111,8 +111,8 @@ function uploadInfo(fqbn, p) {
 
 // Compile: { fqbn, files: [{ path, content }] } -> { log, binary(base64), format, address }
 app.post('/api/compile', rateLimit(20, 60 * 1000), async (req, res) => {
-  const { fqbn, files } = req.body || {};
-  const { status, body } = await compileSketch({ fqbn, files, jobs: JOBS, slot: withCompileSlot });
+  const { fqbn, files, debug } = req.body || {};
+  const { status, body } = await compileSketch({ fqbn, files, debug: !!debug, jobs: JOBS, slot: withCompileSlot });
   res.status(status).json(body);
 });
 
