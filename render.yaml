@@ -1,0 +1,15 @@
+# One-click deploy of the compile server on Render (free plan)
+services:
+  - type: web
+    name: webide-compiler
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: https://hiibrarahmad.github.io
+      # The free plan has 512 MB RAM: compile one sketch at a time
+      - key: COMPILE_JOBS
+        value: "1"
+      - key: MAX_CONCURRENT_COMPILES
+        value: "1"

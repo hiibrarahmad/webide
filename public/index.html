@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web IDE</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%2300979d'/><path d='M4 5l3 3-3 3M8 11h4' stroke='white' stroke-width='1.6' fill='none'/></svg>">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand">⌁ Web IDE</div>
+    <button id="btnVerify" class="tool" title="Compile (Ctrl+R)">✓ <span>Verify</span></button>
+    <button id="btnUpload" class="tool primary" title="Compile &amp; upload (Ctrl+U)">→ <span>Upload</span></button>
+    <div class="sep"></div>
+    <select id="boardSelect" title="Board"></select>
+    <span id="boardOptions"></span>
+    <button id="btnPort" class="tool" title="Select the serial port of your board">🔌 <span id="portLabel">Select port</span></button>
+    <div class="spacer"></div>
+    <button id="btnDownloadFw" class="tool" title="Download last compiled firmware" disabled>⬇ Firmware</button>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <nav class="side-tabs">
+        <button data-panel="files" class="active">Files</button>
+        <button data-panel="github">GitHub</button>
+        <button data-panel="libs">Libraries</button>
+      </nav>
+
+      <section id="panel-files" class="panel active">
+        <div class="row">
+          <select id="projectSelect" title="Project"></select>
+          <button id="btnProjectMenu" class="icon" title="Project actions">⋯</button>
+        </div>
+        <div id="projectMenu" class="menu hidden">
+          <button data-act="new">New project</button>
+          <button data-act="rename">Rename project</button>
+          <button data-act="zip">Download as .zip</button>
+          <button data-act="delete" class="danger">Delete project</button>
+        </div>
+        <div class="row actions">
+          <button id="btnNewFile" title="New file">+ File</button>
+          <label class="btn" title="Upload files from your computer">⇪ Upload<input id="fileInput" type="file" multiple hidden></label>
+          <label class="btn" title="Upload a folder">⇪ Folder<input id="folderInput" type="file" webkitdirectory hidden></label>
+        </div>
+        <ul id="fileTree" class="tree"></ul>
+        <p class="hint">The sketch compiled is the folder containing the open <code>.ino</code> file.</p>
+      </section>
+
+      <section id="panel-github" class="panel">
+        <label class="field">Repository URL
+          <input id="ghUrl" placeholder="https://github.com/user/repo/tree/main/sketch">
+        </label>
+        <label class="field">Token <small>(optional, for private repos / rate limits)</small>
+          <input id="ghToken" type="password" placeholder="ghp_…">
+        </label>
+        <button id="btnGhImport" class="wide">Import into new project</button>
+        <div id="ghStatus" class="status"></div>
+        <p class="hint">Accepts <code>user/repo</code>, a repo URL, or a link to a folder or branch. Source and text files are imported.</p>
+      </section>
+
+      <section id="panel-libs" class="panel">
+        <div class="row">
+          <input id="libQuery" placeholder="Search libraries…">
+          <button id="btnLibSearch">Search</button>
+        </div>
+        <ul id="libResults" class="libs"></ul>
+        <details>
+          <summary>Installed</summary>
+          <ul id="libInstalled" class="libs small"></ul>
+        </details>
+      </section>
+    </aside>
+
+    <section class="editor-area">
+      <div id="editorTabs" class="editor-tabs"></div>
+      <div id="editor"></div>
+      <div id="emptyEditor" class="empty hidden">No file open</div>
+    </section>
+
+    <section class="bottom">
+      <nav class="bottom-tabs">
+        <button data-bpanel="output" class="active">Output</button>
+        <button data-bpanel="serial">Serial Monitor <span id="serialDot" class="dot"></span></button>
+        <div class="spacer"></div>
+        <div id="progress" class="progress hidden"><div></div></div>
+      </nav>
+      <div id="bpanel-output" class="bpanel active"><pre id="output"></pre></div>
+      <div id="bpanel-serial" class="bpanel">
+        <div class="serial-bar">
+          <button id="btnSerial">Connect</button>
+          <select id="baudSelect">
+            <option>300</option><option>1200</option><option>2400</option><option>4800</option>
+            <option>9600</option><option>19200</option><option>38400</option><option>57600</option>
+            <option selected>115200</option><option>230400</option><option>460800</option><option>921600</option>
+          </select>
+          <label><input type="checkbox" id="chkAutoscroll" checked> Autoscroll</label>
+          <label><input type="checkbox" id="chkTimestamp"> Timestamp</label>
+          <button id="btnResetBoard" title="Toggle DTR/RTS to reset the board">Reset board</button>
+          <button id="btnSerialClear">Clear</button>
+        </div>
+        <pre id="serialOut"></pre>
+        <div class="serial-input">
+          <input id="serialInput" placeholder="Message (Enter to send)">
+          <select id="lineEnding">
+            <option value="">No line ending</option>
+            <option value="\n" selected>New line</option>
+            <option value="\r">Carriage return</option>
+            <option value="\r\n">Both NL &amp; CR</option>
+          </select>
+          <button id="btnSerialSend">Send</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status">Ready</span>
+    <span id="cursorPos"></span>
+    <button id="serverStatus" title="Compile server (click to change)">● Compile server</button>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="vendor/jszip.min.js"></script>
+  <script src="vendor/monaco/vs/loader.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
