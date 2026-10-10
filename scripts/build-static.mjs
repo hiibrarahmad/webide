@@ -14,7 +14,9 @@ copy('node_modules/esptool-js/bundle.js', 'vendor/esptool.js');
 copy('node_modules/jszip/dist/jszip.min.js', 'vendor/jszip.min.js');
 
 const apiBase = (process.env.COMPILE_SERVER_URL || '').replace(/\/+$/, '');
-fs.writeFileSync(path.join(dist, 'config.js'), `window.WEBIDE_CONFIG = ${JSON.stringify({ apiBase })};\n`);
+// Repository whose GitHub Actions compile sketches when no compile server is reachable
+const buildRepo = process.env.GITHUB_REPOSITORY || '';
+fs.writeFileSync(path.join(dist, 'config.js'), `window.WEBIDE_CONFIG = ${JSON.stringify({ apiBase, buildRepo })};\n`);
 fs.writeFileSync(path.join(dist, '.nojekyll'), '');
 
 // Cache-bust so visitors get new versions right after a deploy

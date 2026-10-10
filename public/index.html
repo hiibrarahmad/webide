@@ -115,6 +115,37 @@
     </section>
   </main>
 
+  <dialog id="backendDialog">
+    <form method="dialog" class="dlg">
+      <h3>Set up compiling</h3>
+      <p class="hint">Code is compiled either for free on <b>GitHub Actions</b> (about 1–3 minutes per build), or on a compile server you host (seconds).</p>
+      <fieldset>
+        <legend>GitHub Actions (free)</legend>
+        <label class="field">Repository (your copy of this IDE)
+          <input id="ghBuildRepo" placeholder="owner/webide" autocomplete="off">
+        </label>
+        <label class="field">Access token
+          <input id="ghBuildToken" type="password" placeholder="github_pat_…" autocomplete="off">
+        </label>
+        <p class="hint">
+          Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">fine-grained token</a>:
+          Repository access → <b>Only select repositories</b> → that repository; Permissions → <b>Actions</b> and <b>Contents</b>: Read and write.
+          The token is stored only in this browser. Other people: <a href="https://github.com/hiibrarahmad/webide/fork" target="_blank" rel="noopener">fork the repo</a> and use your fork.
+        </p>
+      </fieldset>
+      <fieldset>
+        <legend>Compile server (optional)</legend>
+        <label class="field">Server URL
+          <input id="serverUrl" placeholder="https://… or http://localhost:3000" autocomplete="off">
+        </label>
+      </fieldset>
+      <div class="dlg-actions">
+        <button value="cancel" formnovalidate>Cancel</button>
+        <button value="save" class="tool primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <footer class="statusbar">
     <span id="status">Ready</span>
     <span id="cursorPos"></span>

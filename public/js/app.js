@@ -31,32 +31,122 @@ async function api(path, opts) {
   return r;
 }
 
+let serverOnline = false;
+
 async function checkServer() {
   const el = $('serverStatus');
   el.textContent = '● Compile server: connecting…';
-  el.title = (apiBase() || location.origin) + ' (click to change)';
+  el.title = 'Click to set up compiling';
   // Free hosting tiers sleep when idle; the first request can take up to a minute
   const slow = setTimeout(() => (el.textContent = '● Compile server: waking up (can take ~1 min)…'), 4000);
   try {
     const r = await api('/api/health');
     if (!r.ok) throw new Error(r.status);
-    el.textContent = '● Compile server: online';
-    el.className = 'online';
-    return true;
+    serverOnline = true;
   } catch {
-    el.textContent = '● Compile server: offline (click to set URL)';
-    el.className = 'offline';
-    return false;
+    serverOnline = false;
   } finally {
     clearTimeout(slow);
   }
+  renderBackendStatus();
+  return serverOnline;
+}
+
+function renderBackendStatus() {
+  const el = $('serverStatus');
+  const gh = ghBuild();
+  if (serverOnline) {
+    el.textContent = '● Compile server: online';
+    el.className = 'online';
+  } else if (gh.token && gh.repo) {
+    el.textContent = `● Compiling on GitHub Actions (${gh.repo})`;
+    el.className = 'online';
+  } else {
+    el.textContent = '● Compiling not set up (click here)';
+    el.className = 'offline';
+  }
+}
+
+// ---------- GitHub Actions builds (free compile backend) ----------
+function ghBuild() {
+  const get = k => { try { return localStorage.getItem(k) || ''; } catch { return ''; } };
+  return { repo: get('webide.ghBuildRepo') || window.WEBIDE_CONFIG?.buildRepo || '', token: get('webide.ghBuildToken') };
 }
 
 function configureServer() {
-  const v = prompt('Compile server URL (empty = default):', apiBase());
-  if (v === null) return;
-  try { v.trim() ? localStorage.setItem('webide.apiBase', v.trim()) : localStorage.removeItem('webide.apiBase'); } catch {}
-  checkServer().then(ok => ok && loadBoards());
+  const dlg = $('backendDialog');
+  const gh = ghBuild();
+  $('ghBuildRepo').value = gh.repo;
+  $('ghBuildToken').value = gh.token;
+  try { $('serverUrl').value = localStorage.getItem('webide.apiBase') || ''; } catch {}
+  dlg.showModal();
+  dlg.onclose = () => {
+    if (dlg.returnValue !== 'save') return;
+    const set = (k, v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch {} };
+    set('webide.ghBuildRepo', $('ghBuildRepo').value.trim().replace(/^https:\/\/github\.com\//, '').replace(/\/+$/, ''));
+    set('webide.ghBuildToken', $('ghBuildToken').value.trim());
+    set('webide.apiBase', $('serverUrl').value.trim());
+    checkServer().then(ok => ok && loadBoards());
+  };
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function bytesToB64(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+
+async function githubCompile(fqbn, files) {
+  const { repo, token } = ghBuild();
+  const gh = (path, opts = {}) => fetch(`https://api.github.com/repos/${repo}${path}`, {
+    cache: 'no-store',
+    ...opts,
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', ...opts.headers },
+  });
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+  const gz = await new Response(new Blob([JSON.stringify({ files })]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer();
+  const sketch = bytesToB64(new Uint8Array(gz));
+  if (sketch.length > 60000) throw new Error('Sketch is too large for a GitHub Actions build (about 45 KB compressed at most).');
+
+  const start = await gh('/actions/workflows/compile.yml/dispatches', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ref: 'main', inputs: { build_id: id, fqbn, sketch } }),
+  });
+  if (!start.ok) {
+    const msg = (await start.json().catch(() => ({}))).message || start.statusText;
+    const hint = start.status === 401 ? 'The GitHub token is invalid or expired.'
+      : start.status === 403 || start.status === 404 ? `The token cannot run workflows on ${repo}. Check the repository name and that the token has Actions and Contents set to "Read and write".`
+      : '';
+    throw new Error(`Could not start the GitHub build (${start.status} ${msg}). ${hint}`);
+  }
+  log(`Build queued on GitHub Actions (${repo}); this usually takes 1–3 minutes…`, 'info');
+
+  const t0 = Date.now();
+  let runUrl = null;
+  for (let i = 0; ; i++) {
+    await sleep(i < 6 ? 5000 : 4000);
+    setStatus(`Compiling on GitHub Actions… ${Math.round((Date.now() - t0) / 1000)}s`);
+    const res = await gh(`/contents/result.json?ref=ide-build/${id}`, { headers: { Accept: 'application/vnd.github.raw' } });
+    if (res.ok) {
+      const data = JSON.parse(await res.text());
+      gh(`/git/refs/heads/ide-build/${id}`, { method: 'DELETE' }).catch(() => {});
+      return data;
+    }
+    if (i % 3 === 2) {
+      const runs = await gh('/actions/workflows/compile.yml/runs?event=workflow_dispatch&per_page=20').then(r => r.json()).catch(() => null);
+      const run = runs?.workflow_runs?.find(r => r.display_title === `Compile ${id}`);
+      if (run && !runUrl) {
+        runUrl = run.html_url;
+        log(`Follow the build: ${runUrl}`);
+      }
+      // The job publishes result.json even when the sketch has errors, so a failed job means the build itself broke
+      if (run?.status === 'completed' && run.conclusion !== 'success') throw new Error(`The GitHub build job ${run.conclusion}: ${run.html_url}`);
+    }
+    if (Date.now() - t0 > 20 * 60 * 1000) throw new Error('Timed out waiting for the GitHub build' + (runUrl ? `: ${runUrl}` : ''));
+  }
 }
 
 const BLINK = `// Blink the built-in LED and print to the serial monitor
@@ -528,15 +618,27 @@ async function compile() {
   setStatus('Compiling…');
   const t0 = performance.now();
   try {
-    const res = await api('/api/compile', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fqbn, files }),
-    });
-    const data = await res.json();
+    let data, ok;
+    if (!serverOnline && ghBuild().token) {
+      data = await githubCompile(fqbn, files);
+      ok = !data.error;
+    } else if (!serverOnline) {
+      log('No compile backend is set up.\n' +
+        'Click "Compile server" in the bottom status bar and add a GitHub token (free builds on GitHub Actions) or a compile server URL.', 'err');
+      setStatus('No compile backend');
+      return null;
+    } else {
+      const res = await api('/api/compile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fqbn, files }),
+      });
+      data = await res.json();
+      ok = res.ok;
+    }
     const out = data.log || '';
     const firstErr = setMarkers(out, root);
-    if (!res.ok) {
+    if (!ok) {
       log(out, 'err');
       log(data.error || 'Compilation failed', 'err');
       setStatus('Compilation failed');
@@ -751,10 +853,29 @@ async function upload() {
 }
 
 // ---------- Libraries ----------
+function addToLibrariesTxt(name) {
+  const root = sketchRoot();
+  const path = joinRoot(root?.dir || '', 'libraries.txt');
+  const p = project();
+  const lines = (p.files[path] || '# One Arduino Library Manager name per line (installed when building on GitHub Actions)\n').split('\n');
+  if (!lines.some(l => l.trim() === name)) lines.splice(lines.length - (lines.at(-1) === '' ? 1 : 0), 0, name);
+  p.files[path] = lines.join('\n').replace(/\n*$/, '\n');
+  models.get(path)?.setValue(p.files[path]);
+  saveProjects();
+  renderTree();
+  log(`Added "${name}" to ${path}`, 'ok');
+}
+
 async function searchLibs() {
   const q = $('libQuery').value.trim();
   const ul = $('libResults');
   if (!q) return;
+  if (!serverOnline) {
+    // GitHub Actions builds install the libraries listed in the sketch's libraries.txt
+    ul.innerHTML = '<li><p>Library search needs a compile server. For GitHub Actions builds, add the exact Library Manager name to <code>libraries.txt</code> and it is installed during the build.</p><button>Add to libraries.txt</button></li>';
+    ul.querySelector('button').onclick = () => addToLibrariesTxt(q);
+    return;
+  }
   ul.innerHTML = '<li>Searching…</li>';
   try {
     const libs = await (await api('/api/libs/search?q=' + encodeURIComponent(q))).json();

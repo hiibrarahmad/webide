@@ -133,3 +133,11 @@ pre { margin: 0; flex: 1; overflow: auto; padding: 8px 10px; font: 12px/1.45 Con
 #serverStatus.offline { color: #ffd2d2; }
 .statusbar { gap: 16px; }
 .statusbar #cursorPos { margin-left: auto; }
+dialog { background: var(--bg2); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 0; width: min(520px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgb(0 0 0 / .55); }
+.dlg { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px; }
+.dlg h3 { margin: 0; }
+.dlg fieldset { border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; }
+.dlg legend { color: var(--accent-hi); padding: 0 4px; }
+.dlg a { color: var(--accent-hi); }
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; }

@@ -4,22 +4,22 @@ An online IDE that runs in the browser: write code, import sketches from any Git
 
 **Open the IDE:** https://hiibrarahmad.github.io/webide/ (Chrome or Edge on desktop)
 
-The compile server deploys to **Hugging Face Spaces** (free, no credit card) through GitHub Actions. Render (`render.yaml`) also works but asks for a card.
+Compiling is free: it runs on **GitHub Actions** in this repo, so no server, hosting account or credit card is needed. A self-hosted compile server is optional and faster.
 
 ## How it works
 
 ```
-Browser (GitHub Pages)                         Compile server (Docker, e.g. Render)
-┌───────────────────────────────┐   sketch   ┌────────────────────────────────┐
-│ Monaco editor, GitHub import  │ ─────────▶ │ Express + arduino-cli          │
-│ Web Serial: flash + monitor   │ ◀───────── │ AVR & ESP32 cores preinstalled │
-└──────────────┬────────────────┘  firmware  └────────────────────────────────┘
+Browser (GitHub Pages)                       GitHub Actions (free)
+┌──────────────────────────────┐  dispatch  ┌───────────────────────────────┐
+│ Monaco editor, GitHub import │ ─────────▶ │ arduino-cli + cached cores    │
+│ Web Serial: flash + monitor  │ ◀───────── │ result.json on ide-build/<id> │
+└──────────────┬───────────────┘  firmware  └───────────────────────────────┘
                │ USB (Web Serial)
           Your board
 ```
 
 - **The IDE itself** is static and hosted on GitHub Pages.
-- **Compiling** happens on a small server running `arduino-cli`. GitHub Pages can't run programs, so this part runs elsewhere.
+- **Compiling** runs the *Compile sketch* workflow in your repo. The IDE starts it through the GitHub API with your token, then downloads the firmware. AVR builds take about 15–35 s and ESP32 builds about 1–2 min. Libraries listed in a `libraries.txt` file in the sketch are installed during the build.
 - **Flashing** happens in the visitor's browser over Web Serial. The firmware goes straight from the page to the board on their USB port.
 
 ## Features
@@ -33,19 +33,20 @@ Browser (GitHub Pages)                         Compile server (Docker, e.g. Rend
   - Mega 2560 (STK500v2)
   - Other boards: the firmware file is downloaded instead
 - Serial monitor with baud rate, line endings, timestamps, and board reset
-- Library search and install
+- Libraries: list them in `libraries.txt` (GitHub Actions builds), or search and install with a compile server
 
-## Setup (owner)
+## Setup
 
-1. **Deploy the compile server (free, no card).** Create a [Hugging Face](https://huggingface.co/join) account, then an [access token](https://huggingface.co/settings/tokens) with **Write** permission. Add it to this repo as the Actions secret `HF_TOKEN` and run the *Deploy compile server to Hugging Face Spaces* workflow. The URL is shown in the run summary, e.g. `https://hiibrarahmad-webide.hf.space`. The first build takes 15–25 minutes.
-2. **Point the IDE at it.** In this repo go to *Settings → Secrets and variables → Actions → Variables* and add `COMPILE_SERVER_URL` = that URL. Then re-run the *Deploy IDE to GitHub Pages* workflow.
-3. Open https://hiibrarahmad.github.io/webide/. The status bar should say **Compile server: online**.
+1. Open https://hiibrarahmad.github.io/webide/ and click **Compiling not set up** in the bottom status bar.
+2. Create a [fine-grained token](https://github.com/settings/personal-access-tokens/new):
+   - Repository access: **Only select repositories → webide**.
+   - Permissions: **Actions** and **Contents**, both *Read and write*.
+3. Paste the token in the dialog and click **Save**. The token stays in your browser only.
 
-Anyone can also point the IDE at their own compile server by clicking the status-bar indicator.
+**Other people:** [fork this repo](https://github.com/hiibrarahmad/webide/fork), enable Actions in the fork, then use your fork's name and a token for it in the same dialog. Every user's builds run on their own GitHub account.
 
-> Free Spaces sleep after 48 hours without use; the first request after that waits while it starts up.
-
-The server also serves the full IDE, so the Space URL works as the IDE on its own.
+### Optional: compile server (seconds instead of a minute)
+Run `npm start` locally (needs arduino-cli) or the Docker image anywhere, then enter its URL in the same dialog. When a server is reachable, the IDE uses it instead of GitHub Actions and also offers library search.
 
 ## Server settings (environment variables)
 
@@ -73,7 +74,8 @@ npm start            # http://localhost:3000
 - `public/js/avr.js`: Intel HEX parser and STK500 v1/v2 flasher over Web Serial
 - `public/js/github.js`: GitHub importer
 - `scripts/build-static.mjs`: builds the GitHub Pages site into `dist/`
-- `Dockerfile`, `.github/workflows/hf-space.yml`: compile server deployment (`render.yaml` for Render)
+- `.github/workflows/compile.yml`, `scripts/ci-compile.mjs`, `compile.js`: free GitHub Actions compile backend
+- `Dockerfile`: self-hosted compile server (`render.yaml` and `hf-space.yml` deploy it to Render or Hugging Face PRO)
 
 ## Troubleshooting uploads
 - **"Failed to open serial port"**: Windows refused to open the port.
