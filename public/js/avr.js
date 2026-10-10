@@ -87,7 +87,8 @@ async function v1cmd(io, bytes, respLen = 0, timeout = 1000) {
   return data;
 }
 
-async function flashV1(io, port, image, pageSize, log, progress) {
+// Reset into the bootloader and enter programming mode
+async function syncV1(io, port) {
   let synced = false;
   for (let attempt = 0; attempt < 3 && !synced; attempt++) {
     await resetBoard(port);
@@ -97,27 +98,58 @@ async function flashV1(io, port, image, pageSize, log, progress) {
     }
   }
   if (!synced) throw new Error('Could not sync with bootloader. Check the board/port and the "Processor" option (old bootloader?).');
+  // Replies to earlier sync attempts can still arrive and would shift every later response; flush them
+  await sleep(50);
+  io.drain();
+  await v1cmd(io, [0x30], 0, 500);
+  await v1cmd(io, [0x50]);
+}
+
+// Cheap USB-serial chips occasionally drop a byte. A half-received page leaves the bootloader
+// waiting for data, so recover by resetting back into the bootloader and redoing the page.
+async function withRetry(io, port, log, what, fn) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await fn(); } catch (e) {
+      if (attempt >= 3) throw e;
+      log(`${what}: ${e.message}; retrying`);
+      await sleep(100);
+      io.drain();
+      await syncV1(io, port);
+    }
+  }
+}
+
+async function flashV1(io, port, image, pageSize, log, progress) {
+  await syncV1(io, port);
   log('Bootloader in sync');
   const sig = await v1cmd(io, [0x75], 3).catch(() => null);
   if (sig) log('Signature: ' + sig.map(b => b.toString(16).padStart(2, '0')).join(' '));
-  await v1cmd(io, [0x50]);
 
   const pages = Math.ceil(image.length / pageSize);
   for (let p = 0; p < pages; p++) {
     const addr = p * pageSize, word = addr >> 1;
     const page = image.subarray(addr, addr + pageSize);
-    await v1cmd(io, [0x55, word & 0xff, (word >> 8) & 0xff]);
-    await v1cmd(io, [0x64, page.length >> 8, page.length & 0xff, 0x46, ...page], 0, 2000);
+    await withRetry(io, port, log, `Page ${p}`, async () => {
+      await v1cmd(io, [0x55, word & 0xff, (word >> 8) & 0xff]);
+      await v1cmd(io, [0x64, page.length >> 8, page.length & 0xff, 0x46, ...page], 0, 2000);
+    });
     progress((p + 1) / pages / 2);
   }
   log('Verifying...');
   for (let p = 0; p < pages; p++) {
     const addr = p * pageSize, word = addr >> 1;
     const page = image.subarray(addr, addr + pageSize);
-    await v1cmd(io, [0x55, word & 0xff, (word >> 8) & 0xff]);
-    const got = await v1cmd(io, [0x74, page.length >> 8, page.length & 0xff, 0x46], page.length, 2000);
-    for (let i = 0; i < page.length; i++)
-      if (got[i] !== page[i]) throw new Error(`Verify failed at 0x${(addr + i).toString(16)}`);
+    await withRetry(io, port, log, `Verify page ${p}`, async () => {
+      await v1cmd(io, [0x55, word & 0xff, (word >> 8) & 0xff]);
+      const got = await v1cmd(io, [0x74, page.length >> 8, page.length & 0xff, 0x46], page.length, 2000);
+      for (let i = 0; i < page.length; i++) {
+        if (got[i] === page[i]) continue;
+        // A wrong byte could be a read glitch or a bad write; rewrite the page before re-checking
+        await v1cmd(io, [0x55, word & 0xff, (word >> 8) & 0xff]);
+        await v1cmd(io, [0x64, page.length >> 8, page.length & 0xff, 0x46, ...page], 0, 2000);
+        throw new Error(`Verify mismatch at 0x${(addr + i).toString(16)}`);
+      }
+    });
     progress(0.5 + (p + 1) / pages / 2);
   }
   await v1cmd(io, [0x51]);
